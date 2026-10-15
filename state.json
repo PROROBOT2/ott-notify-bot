@@ -1,4 +1,20 @@
 {
-  "last_episode": 4841,
-  "last_content_id": 1090548214
+  "shows": {
+    "1700000084": {
+      "last_episode": 4841,
+      "last_content_id": 1090548214
+    },
+    "1790007734": {
+      "last_episode": 116,
+      "last_content_id": 1090548203
+    },
+    "1790007859": {
+      "last_episode": 20,
+      "last_content_id": 1090548208
+    },
+    "1790006770": {
+      "last_episode": 165,
+      "last_content_id": 1090548201
+    }
+  }
 }
