@@ -30,6 +30,8 @@ SHOWS = [
      "slug": "kaun-banega-crorepati"},
 {"name": "Family Full House With Rohit Sharma", "id": 1790007851,
 "slug": "family-full-house-with-rohit-sharma"},
+    {"name": "Mahotsav Aadi Shakti Ka", "id": 1790007885,
+     "slug": "mahotsav-aadi-shakti-ka"},
 ]
 
 API_BASE = (
