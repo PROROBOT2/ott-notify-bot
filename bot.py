@@ -102,7 +102,7 @@ def episode_link(show, m):
 def build_caption(show, m, link):
     when = avail_time(m).astimezone(IST).strftime("%d %B %Y")
     lines = [
-        "#NewEpisode #SONYLIV #Notification",
+        "#NewEpisode #DMT #SONYLIV #Notification",
         "",
         f"<b>Show Name: {html.escape(show['name'], quote=False)}</b>",
     ]
