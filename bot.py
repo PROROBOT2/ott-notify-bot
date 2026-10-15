@@ -22,6 +22,8 @@ SHOWS = [
      "slug": "kyunki-papa-kehte-hain"},
     {"name": "Hui Gumm Yaadein Ek Doctor Do Zindagiyaan", "id": 1790006770,
      "slug": "hui-gumm-yaadein-ek-doctor-do-zindagiyaan"},
+    {"name": "Pushpa Impossible", "id": 1700000921,
+     "slug": "pushpa-impossible"},
 ]
 
 API_BASE = (
