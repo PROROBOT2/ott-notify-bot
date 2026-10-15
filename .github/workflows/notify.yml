@@ -1,37 +1,53 @@
+
 name: TMKOC notify
 
 on:
   schedule:
-    - cron: "*/5 14-16 * * *"   # 7:30 PM - 10:29 PM IST, har 5 min
-  workflow_dispatch:            # manual test ke liye
+    # India time 8:30 PM = 15:00 UTC
+    - cron: "0,15,30,45 15-16 * * *"
+    # India time 7:30 PM = 14:00 UTC
+    - cron: "30,45 14 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: notify
+  group: ott-notify
   cancel-in-progress: false
 
 jobs:
-  run:
+  notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          python-version: "3.12"
-      - run: pip install requests
-      - name: Run bot
-        run: python bot.py
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run notifier
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      - name: Save state
+        run: python bot.py
+
+      - name: Save episode state
+        if: always()
         run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name "tmkoc-bot"
-            git config user.email "bot@users.noreply.github.com"
+          if ! git diff --quiet -- state.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add state.json
-            git commit -m "update state"
+            git commit -m "Update episode notification state" || true
             git push
           fi
