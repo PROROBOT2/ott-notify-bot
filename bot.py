@@ -26,6 +26,10 @@ SHOWS = [
      "slug": "pushpa-impossible"},
     {"name": "Indian Game Show", "id": 1790007836,
      "slug": "indian-game-show"},
+    {"name": "Kaun Banega Crorepati", "id": 1700000195,
+     "slug": "kaun-banega-crorepati"},
+{"name": "Family Full House With Rohit Sharma", "id": 1790007851,
+"slug": "family-full-house-with-rohit-sharma"},
 ]
 
 API_BASE = (
