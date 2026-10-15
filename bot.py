@@ -24,6 +24,8 @@ SHOWS = [
      "slug": "hui-gumm-yaadein-ek-doctor-do-zindagiyaan"},
     {"name": "Pushpa Impossible", "id": 1700000921,
      "slug": "pushpa-impossible"},
+    {"name": "Indian Game Show", "id": 1790007836,
+     "slug": "indian-game-show"},
 ]
 
 API_BASE = (
