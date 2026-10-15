@@ -24,7 +24,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 # "switch" = jab episode sabke liye free hota hai (entitlementSwitchTime, 8:30 PM IST)
 # "air"    = originalAirDate (ek din pehle, premium)
-NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "switch")
+NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "air")
 
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TG_CHAT_ID", "")
