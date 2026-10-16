@@ -22,6 +22,14 @@ SHOWS = [
      "slug": "kyunki-papa-kehte-hain"},
     {"name": "Hui Gumm Yaadein Ek Doctor Do Zindagiyaan", "id": 1790006770,
      "slug": "hui-gumm-yaadein-ek-doctor-do-zindagiyaan"},
+    {"name": "Family Full House with Rohit Sharma", "id": 1790007851,
+     "slug": "family-full-house-with-rohit-sharma"},
+    {"name": "Indian Game Show", "id": 1790007836,
+     "slug": "indian-game-show"},
+    {"name": "Kaun Banega Crorepati", "id": 1700000195,
+     "slug": "kaun-banega-crorepati"},
+    {"name": "Pushpa Impossible", "id": 1700000921,
+     "slug": "pushpa-impossible"},
 ]
 
 # ---------------------------------------------------------------
