@@ -195,45 +195,99 @@ def send_telegram(show, m):
 
 
 # =================================================================
-# ZEE5 (show page ke andar JSON-LD se episodes, token ki zaroorat nahi)
+# ZEE5 (Direct Catalog API + Webpage Fallback)
 # =================================================================
 def fetch_zee5_episodes(show):
-    """Is show ke episodes (naye pehle). Error par Exception."""
-    url = ZEE5_PAGE.format(**show)
-    r = requests.get(url, headers=ZEE5_HEADERS, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"ZEE5 page status {r.status_code}")
+    """Is show ke episodes (naye pehle). Direct API se fetch karega."""
+    eps = []
 
-    blocks = re.findall(
-        r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-        r.text, re.S,
-    )
-    eps, seen_ids = [], set()
-    for b in blocks:
+    # 1. Direct ZEE5 API se fetch karna
+    try:
+        api_url = f"https://catalogapi.zee5.com/v1/content/{show['id']}?translation=en&country=IN"
+        r = requests.get(api_url, headers=HEADERS, timeout=25)
+        if r.status_code == 200:
+            data = r.json()
+            seasons = data.get("seasons", [])
+            season_id = None
+            if seasons and isinstance(seasons, list):
+                last_season = seasons[-1]
+                if isinstance(last_season, dict):
+                    season_id = last_season.get("id")
+                elif isinstance(last_season, str):
+                    season_id = last_season
+
+            if not season_id:
+                season_id = show["id"].replace("0-6-", "0-2-")
+
+            ep_url = (
+                f"https://gwapi.zee5.com/content/tvshow/?season_id={season_id}"
+                f"&type=episode&translation=en&country=IN&on_air=true&page=0&limit=5"
+            )
+            r_ep = requests.get(ep_url, headers=HEADERS, timeout=25)
+            if r_ep.status_code == 200:
+                episodes = r_ep.json().get("episode", [])
+                for it in episodes:
+                    ep_id = it.get("id")
+                    if not ep_id:
+                        continue
+                    title = it.get("title") or ""
+                    web_url = it.get("web_url")
+                    if web_url:
+                        full_url = f"https://www.zee5.com{web_url}"
+                    else:
+                        full_url = f"https://www.zee5.com/tv-shows/details/{show['slug']}/{show['id']}/{ep_id}"
+
+                    img = it.get("list_image") or it.get("image_url") or ""
+                    eps.append({
+                        "id": ep_id,
+                        "title": title,
+                        "url": full_url,
+                        "image": img,
+                        "desc": it.get("description") or "",
+                        "number": it.get("episode_number"),
+                    })
+    except Exception as err:
+        print(f"  [ZEE5 API check failed, trying webpage fallback]: {err}")
+
+    # 2. Webpage JSON-LD Fallback (agar API me koi error aaye)
+    if not eps:
         try:
-            data = json.loads(b)
-        except json.JSONDecodeError:
-            continue
-        for d in (data if isinstance(data, list) else [data]):
-            if not isinstance(d, dict):
-                continue
-            for it in d.get("itemListElement") or []:
-                if isinstance(it, dict) and isinstance(it.get("item"), dict):
-                    it = it["item"]
-                link = (it or {}).get("url") or ""
-                m = re.search(r"/(0-1-[0-9a-z]+)/?$", link)
-                if not m or show["id"] not in link or m.group(1) in seen_ids:
-                    continue
-                seen_ids.add(m.group(1))
-                eps.append({
-                    "id": m.group(1),
-                    "title": it.get("name") or "",
-                    "url": link,
-                    "image": it.get("image") or "",
-                    "desc": it.get("description") or "",
-                    "number": it.get("episodeNumber"),
-                })
-    return eps  # page pe jo order hai (naya pehle)
+            url = ZEE5_PAGE.format(**show)
+            r = requests.get(url, headers=ZEE5_HEADERS, timeout=25)
+            if r.status_code == 200:
+                blocks = re.findall(
+                    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+                    r.text, re.S,
+                )
+                seen_ids = set()
+                for b in blocks:
+                    try:
+                        data = json.loads(b)
+                    except json.JSONDecodeError:
+                        continue
+                    for d in (data if isinstance(data, list) else [data]):
+                        if not isinstance(d, dict):
+                            continue
+                        for it in d.get("itemListElement") or []:
+                            if isinstance(it, dict) and isinstance(it.get("item"), dict):
+                                it = it["item"]
+                            link = (it or {}).get("url") or ""
+                            m = re.search(r"/(0-1-[0-9a-z]+)/?$", link)
+                            if not m or m.group(1) in seen_ids:
+                                continue
+                            seen_ids.add(m.group(1))
+                            eps.append({
+                                "id": m.group(1),
+                                "title": it.get("name") or "",
+                                "url": link,
+                                "image": it.get("image") or "",
+                                "desc": it.get("description") or "",
+                                "number": it.get("episodeNumber"),
+                            })
+        except Exception as e:
+            print(f"  [ZEE5 Webpage fallback failed]: {e}")
+
+    return eps
 
 
 def zee5_caption(show, e):
@@ -264,6 +318,8 @@ def zee5_poster(e):
     url = e.get("image") or ""
     if not url:
         return None
+    if not url.startswith("http"):
+        url = f"https://akamaividz2.zee5.com/image/upload/w_1000,h_562,c_scale,f_webp,q_auto:eco/resources/{e['id']}/list/{url}"
     # Telegram avif support nahi karta -> jpg maango, thoda bada size
     url = url.replace("f_avif", "f_jpg").replace("w_438,h_254", "w_1000,h_562")
     return get_image(url)
