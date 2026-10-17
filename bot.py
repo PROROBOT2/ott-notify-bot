@@ -43,8 +43,15 @@ SHOWS = [
 # https://www.zee5.com/tv-shows/details/<slug>/<id>
 # ---------------------------------------------------------------
 ZEE5_SHOWS = [
-    {"name": "Tumm Se Tumm Tak", "id": "0-6-4z5727104",
-     "slug": "tumm-se-tumm-tak"},
+    {"name": "Tumm Se Tumm Tak", "id": "0-6-4z5727104", "slug": "tumm-se-tumm-tak"},
+    {"name": "Humari Radha", "id": "0-6-4z5990458", "slug": "humari-radha"},
+    {"name": "Tu Hi Re Dil Mein", "id": "0-6-4z5906051", "slug": "tu-hi-re-dil-mein"},
+    {"name": "Lakshmi Niwas", "id": "0-6-4z5666067", "slug": "lakshmi-niwas"},
+    {"name": "Ganga Mai Ki Betiyan", "id": "0-6-4z5793364", "slug": "ganga-mai-ki-betiyan"},
+    {"name": "Vasudha", "id": "0-6-4z5612471", "slug": "vasudha"},
+    {"name": "Sach Subhash Chandra Show", "id": "0-6-4z5865856", "slug": "sach-subhash-chandra-show"},
+    {"name": "Dilo Ki Ram Leela", "id": "0-6-4z51028474", "slug": "dilo-ki-ram-leela"},
+    {"name": "Jagadhatri", "id": "0-6-4z5853175", "slug": "jagadhatri"},
 ]
 ZEE5_PAGE = "https://www.zee5.com/tv-shows/details/{slug}/{id}"
 
@@ -220,7 +227,6 @@ def fetch_zee5_page_html(url):
         except Exception as e:
             print(f"  [curl_cffi error]: {e}")
 
-    # Fallback to standard requests
     r = requests.get(url, headers=ZEE5_HEADERS, timeout=30)
     if r.status_code == 200:
         return r.text
@@ -235,7 +241,6 @@ def fetch_zee5_episodes(show):
         print("  ZEE5 HTML nahi mil saka (Akamai block ya timeout)")
         return []
 
-    # 1. JSON-LD structured blocks se episodes
     blocks = re.findall(
         r'<script[^>]*type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>',
         html_text, re.S,
@@ -254,7 +259,6 @@ def fetch_zee5_episodes(show):
                 if isinstance(it, dict) and isinstance(it.get("item"), dict):
                     it = it["item"]
                 link = (it or {}).get("url") or ""
-                # Match episode ID (e.g. 0-1-6z5...)
                 m = re.search(r"(0-1-[0-9a-zA-Z_\-]+)", link)
                 if not m or m.group(1) in seen_ids:
                     continue
@@ -268,7 +272,6 @@ def fetch_zee5_episodes(show):
                     "number": it.get("episodeNumber"),
                 })
 
-    # 2. Agar JSON-LD me na mile toh page HTML se direct links dhundo
     if not eps:
         matches = re.findall(
             r'href=[\'"](/tv-shows/details/[^\'"]*?(0-1-[0-9a-zA-Z_\-]+)[^\'"]*?)[\'"]',
