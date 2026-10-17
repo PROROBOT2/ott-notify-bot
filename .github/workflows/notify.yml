@@ -2,9 +2,12 @@ name: TMKOC notify
 
 on:
   schedule:
-    # India 7:32 PM se 10:22 PM tak, har 10 minute (UTC 14:02 se 16:52)
-    # :00/:30 avoid kiye hain kyunki GitHub pe unpe bheed hoti hai
-    - cron: "2,12,22,32,42,52 14-16 * * *"
+    # 🌅 Subah 5:32 AM se 9:22 AM IST tak (har 10 minute)
+    - cron: "2,12,22,32,42,52 0-3 * * *"
+
+    # 🌙 Shaam 5:32 PM se 11:22 PM IST tak (har 10 minute)
+    - cron: "2,12,22,32,42,52 12-17 * * *"
+
   workflow_dispatch:
 
 permissions:
