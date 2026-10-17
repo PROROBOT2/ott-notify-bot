@@ -9,6 +9,12 @@ from urllib.parse import quote
 
 import requests
 
+try:
+    from curl_cffi import requests as cffi_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
 # ---------------------------------------------------------------
 # SONYLIV SHOWS: (naam, show_id, link wala slug)
 # link: https://www.sonyliv.com/shows/<slug>-<show_id>
@@ -53,7 +59,6 @@ API_BASE = (
 STATE_FILE = "state.json"
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# "air" = originalAirDate | "switch" = jab sabke liye free ho
 NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "air")
 
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -68,10 +73,14 @@ HEADERS = {
     "Referer": "https://www.sonyliv.com/",
 }
 ZEE5_HEADERS = {
-    "User-Agent": HEADERS["User-Agent"],
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
-    "Referer": "https://www.zee5.com/",
+    "Referer": "https://www.google.com/",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 
@@ -83,7 +92,6 @@ def norm(s):
 # SONYLIV
 # =================================================================
 def fetch_episodes(show):
-    """Is show ke episodes (naye pehle). Error par Exception."""
     url = API_BASE.format(title=quote(show["name"], safe=""))
     r = requests.get(url, headers=HEADERS, timeout=30)
     if r.status_code != 200:
@@ -101,7 +109,7 @@ def fetch_episodes(show):
         metas.append(m)
 
     eps = [m for m in metas if show["id"] in m["_parents"]]
-    if not eps:  # fallback: title match
+    if not eps:
         eps = [m for m in metas if norm(show["name"]) in norm(m.get("title"))]
         if eps:
             print(f"  (fallback title match use hua: {show['name']})")
@@ -118,7 +126,7 @@ def avail_time(m):
 
 
 def episode_link(show, m):
-    title = re.sub(r"['\u2019`]", "", m.get("episodeTitle", "").lower())  # apostrophe hata do
+    title = re.sub(r"['\u2019`]", "", m.get("episodeTitle", "").lower())
     slug = re.sub(r"[^a-z0-9]+", "-", title).strip("-")
     return (
         f"https://www.sonyliv.com/shows/{show['slug']}-{show['id']}/"
@@ -195,97 +203,90 @@ def send_telegram(show, m):
 
 
 # =================================================================
-# ZEE5 (Direct Catalog API + Webpage Fallback)
+# ZEE5 (Bypass Akamai WAF using Chrome Impersonation)
 # =================================================================
-def fetch_zee5_episodes(show):
-    """Is show ke episodes (naye pehle). Direct API se fetch karega."""
-    eps = []
-
-    # 1. Direct ZEE5 API se fetch karna
-    try:
-        api_url = f"https://catalogapi.zee5.com/v1/content/{show['id']}?translation=en&country=IN"
-        r = requests.get(api_url, headers=HEADERS, timeout=25)
-        if r.status_code == 200:
-            data = r.json()
-            seasons = data.get("seasons", [])
-            season_id = None
-            if seasons and isinstance(seasons, list):
-                last_season = seasons[-1]
-                if isinstance(last_season, dict):
-                    season_id = last_season.get("id")
-                elif isinstance(last_season, str):
-                    season_id = last_season
-
-            if not season_id:
-                season_id = show["id"].replace("0-6-", "0-2-")
-
-            ep_url = (
-                f"https://gwapi.zee5.com/content/tvshow/?season_id={season_id}"
-                f"&type=episode&translation=en&country=IN&on_air=true&page=0&limit=5"
-            )
-            r_ep = requests.get(ep_url, headers=HEADERS, timeout=25)
-            if r_ep.status_code == 200:
-                episodes = r_ep.json().get("episode", [])
-                for it in episodes:
-                    ep_id = it.get("id")
-                    if not ep_id:
-                        continue
-                    title = it.get("title") or ""
-                    web_url = it.get("web_url")
-                    if web_url:
-                        full_url = f"https://www.zee5.com{web_url}"
-                    else:
-                        full_url = f"https://www.zee5.com/tv-shows/details/{show['slug']}/{show['id']}/{ep_id}"
-
-                    img = it.get("list_image") or it.get("image_url") or ""
-                    eps.append({
-                        "id": ep_id,
-                        "title": title,
-                        "url": full_url,
-                        "image": img,
-                        "desc": it.get("description") or "",
-                        "number": it.get("episode_number"),
-                    })
-    except Exception as err:
-        print(f"  [ZEE5 API check failed, trying webpage fallback]: {err}")
-
-    # 2. Webpage JSON-LD Fallback (agar API me koi error aaye)
-    if not eps:
+def fetch_zee5_page_html(url):
+    """Akamai WAF ko bypass karke ZEE5 page lata hai."""
+    if HAS_CURL_CFFI:
         try:
-            url = ZEE5_PAGE.format(**show)
-            r = requests.get(url, headers=ZEE5_HEADERS, timeout=25)
+            r = cffi_requests.get(
+                url,
+                headers=ZEE5_HEADERS,
+                impersonate="chrome120",
+                timeout=30,
+            )
             if r.status_code == 200:
-                blocks = re.findall(
-                    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
-                    r.text, re.S,
-                )
-                seen_ids = set()
-                for b in blocks:
-                    try:
-                        data = json.loads(b)
-                    except json.JSONDecodeError:
-                        continue
-                    for d in (data if isinstance(data, list) else [data]):
-                        if not isinstance(d, dict):
-                            continue
-                        for it in d.get("itemListElement") or []:
-                            if isinstance(it, dict) and isinstance(it.get("item"), dict):
-                                it = it["item"]
-                            link = (it or {}).get("url") or ""
-                            m = re.search(r"/(0-1-[0-9a-z]+)/?$", link)
-                            if not m or m.group(1) in seen_ids:
-                                continue
-                            seen_ids.add(m.group(1))
-                            eps.append({
-                                "id": m.group(1),
-                                "title": it.get("name") or "",
-                                "url": link,
-                                "image": it.get("image") or "",
-                                "desc": it.get("description") or "",
-                                "number": it.get("episodeNumber"),
-                            })
+                return r.text
         except Exception as e:
-            print(f"  [ZEE5 Webpage fallback failed]: {e}")
+            print(f"  [curl_cffi error]: {e}")
+
+    # Fallback to standard requests
+    r = requests.get(url, headers=ZEE5_HEADERS, timeout=30)
+    if r.status_code == 200:
+        return r.text
+    return ""
+
+
+def fetch_zee5_episodes(show):
+    """Show ke episodes extract karta hai."""
+    url = ZEE5_PAGE.format(**show)
+    html_text = fetch_zee5_page_html(url)
+    if not html_text:
+        print("  ZEE5 HTML nahi mil saka (Akamai block ya timeout)")
+        return []
+
+    # 1. JSON-LD structured blocks se episodes
+    blocks = re.findall(
+        r'<script[^>]*type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>',
+        html_text, re.S,
+    )
+    eps, seen_ids = [], set()
+    for b in blocks:
+        try:
+            data = json.loads(b)
+        except json.JSONDecodeError:
+            continue
+        items_to_check = data if isinstance(data, list) else [data]
+        for d in items_to_check:
+            if not isinstance(d, dict):
+                continue
+            for it in d.get("itemListElement") or []:
+                if isinstance(it, dict) and isinstance(it.get("item"), dict):
+                    it = it["item"]
+                link = (it or {}).get("url") or ""
+                # Match episode ID (e.g. 0-1-6z5...)
+                m = re.search(r"(0-1-[0-9a-zA-Z_\-]+)", link)
+                if not m or m.group(1) in seen_ids:
+                    continue
+                seen_ids.add(m.group(1))
+                eps.append({
+                    "id": m.group(1),
+                    "title": it.get("name") or "",
+                    "url": link,
+                    "image": it.get("image") or "",
+                    "desc": it.get("description") or "",
+                    "number": it.get("episodeNumber"),
+                })
+
+    # 2. Agar JSON-LD me na mile toh page HTML se direct links dhundo
+    if not eps:
+        matches = re.findall(
+            r'href=[\'"](/tv-shows/details/[^\'"]*?(0-1-[0-9a-zA-Z_\-]+)[^\'"]*?)[\'"]',
+            html_text,
+        )
+        for link, ep_id in matches:
+            if ep_id in seen_ids:
+                continue
+            seen_ids.add(ep_id)
+            full_url = f"https://www.zee5.com{link}"
+            eps.append({
+                "id": ep_id,
+                "title": f"Episode {ep_id}",
+                "url": full_url,
+                "image": "",
+                "desc": "",
+                "number": None,
+            })
 
     return eps
 
@@ -318,9 +319,6 @@ def zee5_poster(e):
     url = e.get("image") or ""
     if not url:
         return None
-    if not url.startswith("http"):
-        url = f"https://akamaividz2.zee5.com/image/upload/w_1000,h_562,c_scale,f_webp,q_auto:eco/resources/{e['id']}/list/{url}"
-    # Telegram avif support nahi karta -> jpg maango, thoda bada size
     url = url.replace("f_avif", "f_jpg").replace("w_438,h_254", "w_1000,h_562")
     return get_image(url)
 
@@ -334,7 +332,6 @@ def load_state():
             state = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         state = {}
-    # purana (single-show) format ko migrate karo -> TMKOC
     if "last_episode" in state:
         tm = str(SHOWS[0]["id"])
         state.setdefault("shows", {})[tm] = {
@@ -366,7 +363,7 @@ def process_show(show, state, now):
     rec = state["shows"].get(str(show["id"]), {})
     last = rec.get("last_episode")
     if last is None:
-        pending = live[:1]  # pehli baar: sirf latest live (test)
+        pending = live[:1]
     else:
         pending = sorted((m for m in live if int(m["episodeNumber"]) > last),
                          key=lambda m: int(m["episodeNumber"]))
@@ -389,18 +386,17 @@ def process_show(show, state, now):
 def process_zee5_show(show, state):
     eps = fetch_zee5_episodes(show)
     if not eps:
-        print("  Koi episode nahi mila (page ya JSON-LD badla ho sakta hai)")
+        print("  Koi episode nahi mila (page ya JSON-LD check karo)")
         return False
     print(f"  Page pe latest: {eps[0]['title']} | total list: {len(eps)}")
 
     rec = state["zee5"].get(show["id"])
     if rec is None:
-        # pehli baar: sirf sabse naya bhejo, purane "dekhe hue" maan lo
         seen = [e["id"] for e in eps[1:]]
         pending = eps[:1]
     else:
         seen = list(rec.get("seen", []))
-        pending = [e for e in reversed(eps) if e["id"] not in seen]  # purana pehle
+        pending = [e for e in reversed(eps) if e["id"] not in seen]
 
     if not pending:
         print("  Naya kuch nahi")
@@ -429,7 +425,7 @@ def main():
         try:
             if process_show(show, state, now):
                 ok += 1
-        except Exception as e:  # ek show fail ho to baaki chalte rahein
+        except Exception as e:
             print("  ERROR:", e)
     for show in ZEE5_SHOWS:
         print(f"== [ZEE5] {show['name']}")
