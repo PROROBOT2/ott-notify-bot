@@ -356,6 +356,8 @@ DANGAL_UA = (
 # Dangal Play ki website ke apne JS wale constants. Site inhe badle toh decrypt fail hoga.
 DANGAL_KEY = b"89H49I12T20E542N17D4E5A47R184LKL"
 DANGAL_IV = b"0543737198408118"
+# Guest token lene ke liye site ke JS me hardcoded app-authorization (HAR sanitize me ye header hat jata hai)
+DANGAL_APP_AUTH = "abd07061a3dd9851e3c9dd551e68e2688c5500a5139a561299a4ffbe40584f233f41d2b974b99122998fad15277a03408953d6e36ee6bbe9186b5cfb2a291f230a926bfef04810c774e7de5e94c5bf5f"
 
 
 def dangal_headers():
@@ -379,7 +381,8 @@ def dangal_get_token():
     r = requests.post(
         f"{DANGAL_API}/generate/authToken/device/desktop/platform/web",
         json={},
-        headers={**dangal_headers(), "Content-Type": "application/json"},
+        headers={**dangal_headers(), "Content-Type": "application/json",
+                 "authorization": DANGAL_APP_AUTH},
         timeout=30,
     )
     if r.status_code != 200:
