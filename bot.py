@@ -1,4 +1,4 @@
-"""SonyLIV + ZEE5 serials -> Telegram notifier (multi-show)."""
+"""SonyLIV + ZEE5 + Dangal Play serials -> Telegram notifier (multi-show)."""
 import html
 import json
 import os
@@ -14,6 +14,15 @@ try:
     HAS_CURL_CFFI = True
 except ImportError:
     HAS_CURL_CFFI = False
+
+# Dangal Play ka response AES se encrypted aata hai. 'cryptography' install na ho toh
+# sirf Dangal wala hissa skip hoga, baaki bot (SonyLIV/ZEE5) bilkul normal chalega.
+try:
+    from cryptography.hazmat.primitives import padding as _padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
 
 # ---------------------------------------------------------------
 # SONYLIV SHOWS: (naam, show_id, link wala slug)
@@ -54,6 +63,14 @@ ZEE5_SHOWS = [
     {"name": "Jagadhatri", "id": "0-6-4z5853175", "slug": "jagadhatri"},
 ]
 ZEE5_PAGE = "https://www.zee5.com/tv-shows/details/{slug}/{id}"
+
+# ---------------------------------------------------------------
+# DANGAL PLAY SHOWS: series_id kaise nikalna hai:
+# show page pe F12 -> Network -> filter me 'seriesId' likho -> URL me seriesId/<number>
+# ---------------------------------------------------------------
+DANGAL_SHOWS = [
+    {"name": "Kaisi Teri Dillagi", "series_id": 1739},
+]
 
 API_BASE = (
     "https://apiv3.sonyliv.com/AGL/4.8/A/ENG/WEB/IN/RJ/TRAY/SEARCH/VOD"
@@ -327,6 +344,135 @@ def zee5_poster(e):
 
 
 # =================================================================
+# DANGAL PLAY (guest token + encrypted episode list)
+# =================================================================
+DANGAL_SITE = "https://www.dangalplay.com"
+DANGAL_API = "https://dangal-api.dangalplay.com/microplay/v1"
+DANGAL_IMG = "https://img-enterr10.videostech.cloud/thumb"
+DANGAL_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
+# Dangal Play ki website ke apne JS wale constants. Site inhe badle toh decrypt fail hoga.
+DANGAL_KEY = b"89H49I12T20E542N17D4E5A47R184LKL"
+DANGAL_IV = b"0543737198408118"
+
+
+def dangal_headers():
+    return {
+        "Origin": DANGAL_SITE,
+        "Referer": DANGAL_SITE + "/",
+        "User-Agent": DANGAL_UA,
+        "Accept": "application/json, text/plain, */*",
+    }
+
+
+def dangal_decrypt(hex_text):
+    dec = Cipher(algorithms.AES(DANGAL_KEY), modes.CBC(DANGAL_IV)).decryptor()
+    raw = dec.update(bytes.fromhex(hex_text)) + dec.finalize()
+    unpad = _padding.PKCS7(128).unpadder()
+    return json.loads(unpad.update(raw) + unpad.finalize())
+
+
+def dangal_get_token():
+    """Bina login ka guest token (roz naya banta hai, bot har run me khud leta hai)."""
+    r = requests.post(
+        f"{DANGAL_API}/generate/authToken/device/desktop/platform/web",
+        json={},
+        headers={**dangal_headers(), "Content-Type": "application/json"},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Dangal token status {r.status_code}: {r.text[:150]}")
+    return r.json()["authToken"]
+
+
+def dangal_api_get(path, token):
+    headers = {
+        **dangal_headers(),
+        "authtoken": token,
+        "country": "IN",
+        "language": "EN",
+        "state": "Haryana",
+        "city": "Gurgaon",
+        "profileid": "1",
+    }
+    r = requests.get(
+        f"{DANGAL_API}/{path}/device/desktop/platform/web", headers=headers, timeout=30
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Dangal API status {r.status_code}: {r.text[:150]}")
+    j = r.json()
+    if j.get("code") != 1:
+        raise RuntimeError(f"Dangal API code {j.get('code')} for {path}")
+    return dangal_decrypt(j["result"])
+
+
+def dangal_released(ep):
+    try:
+        t = datetime.strptime(ep["startDate"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+        return t <= datetime.now(IST)
+    except Exception:
+        return True
+
+
+def dangal_latest_episodes(series_id, token):
+    """Released episodes, purane se naye order me (last = sabse naya)."""
+    seasons = dangal_api_get(
+        f"season/list/seriesId/{series_id}/limit/10/offset/0", token
+    )["season"]
+    season_id = seasons[0]["seasonID"]  # pehla season = sabse naya (site bhi yahi karti hai)
+    eps = dangal_api_get(
+        f"user/content/list/seasonId/{season_id}/limit/10/offset/0", token
+    )["content"]
+    eps = [e for e in eps if e.get("contentType") == "video" and dangal_released(e)]
+    return sorted(eps, key=lambda e: int(e["id"]))
+
+
+def dangal_poster(ep_id):
+    for w, h in ((1280, 720), (480, 270)):
+        try:
+            r = requests.get(
+                DANGAL_IMG,
+                params={"fn": f"5005_{ep_id}_rectangle_16x9", "w": w, "h": h, "platform": "web"},
+                headers={"Referer": DANGAL_SITE + "/", "User-Agent": DANGAL_UA},
+                timeout=30,
+            )
+            if (r.status_code == 200 and r.content
+                    and r.headers.get("content-type", "").startswith("image")):
+                return r.content
+            print("  Dangal poster failed:", r.status_code)
+        except requests.RequestException as e:
+            print("  Dangal poster error:", e)
+    return None
+
+
+def dangal_caption(show, e):
+    try:
+        when = datetime.strptime(e["startDate"], "%Y-%m-%d %H:%M:%S").strftime("%d %B %Y")
+    except Exception:
+        when = datetime.now(IST).strftime("%d %B %Y")
+    link = f"{DANGAL_SITE}/{e['permalink']}"
+    lines = [
+        "#NewEpisode #DMT #DANGALPLAY #Notification",
+        "",
+        f"<b>Show Name: {html.escape(show['name'], quote=False)}</b>",
+    ]
+    m = re.search(r"EP\s*#?\s*(\d+)", e.get("title", ""), re.I)
+    if m:
+        lines.append(f"<b>Episode Number: {m.group(1)}</b>")
+    lines += [
+        f"<b>Episode Title: {html.escape(e.get('title', ''), quote=False)}</b>",
+        f"<b>Release Date: {when}</b>",
+        "<b>Language: Hindi</b>",
+        "",
+        "<b>Show Link:</b>",
+        f"<code>{html.escape(link, quote=False)}</code>",
+    ]
+    return "\n".join(lines)
+
+
+# =================================================================
 # STATE
 # =================================================================
 def load_state():
@@ -343,6 +489,7 @@ def load_state():
         }
     state.setdefault("shows", {})
     state.setdefault("zee5", {})
+    state.setdefault("dangal", {})
     return state
 
 
@@ -415,6 +562,34 @@ def process_zee5_show(show, state):
     return True
 
 
+def process_dangal_show(show, state, token):
+    eps = dangal_latest_episodes(show["series_id"], token)
+    if not eps:
+        print("  Koi episode nahi mila (series_id check karo)")
+        return False
+    print(f"  Latest on API: {eps[-1]['title']} | released: {len(eps)}")
+
+    key = str(show["series_id"])
+    rec = state["dangal"].get(key)
+    if rec is None:
+        pending = eps[-1:]          # pehli baar: sirf sabse naya episode
+    else:
+        last = int(rec.get("last_id", 0))
+        pending = [e for e in eps if int(e["id"]) > last]
+
+    if not pending:
+        print("  Naya kuch nahi")
+        return True
+
+    for e in pending:
+        if send_tg(dangal_caption(show, e), dangal_poster(e["id"])):
+            state["dangal"][key] = {"last_id": int(e["id"])}
+            save_state(state)
+        else:
+            return False
+    return True
+
+
 def main():
     if not TOKEN or not CHAT_ID:
         print("TG_BOT_TOKEN / TG_CHAT_ID set nahi hain")
@@ -437,6 +612,24 @@ def main():
                 ok += 1
         except Exception as e:
             print("  ERROR:", e)
+    if DANGAL_SHOWS:
+        if not HAS_CRYPTO:
+            print("== [DANGAL] 'cryptography' install nahi hai, Dangal skip "
+                  "(requirements.txt me 'cryptography' add karo)")
+        else:
+            dangal_token = None
+            try:
+                dangal_token = dangal_get_token()
+            except Exception as e:
+                print("== [DANGAL] token ERROR:", e)
+            if dangal_token:
+                for show in DANGAL_SHOWS:
+                    print(f"== [DANGAL] {show['name']}")
+                    try:
+                        if process_dangal_show(show, state, dangal_token):
+                            ok += 1
+                    except Exception as e:
+                        print("  ERROR:", e)
     save_state(state)
     if ok == 0:
         print("Koi bhi show kaam nahi kiya")
