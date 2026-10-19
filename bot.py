@@ -55,7 +55,7 @@ ZEE5_SHOWS = [
     {"name": "Tumm Se Tumm Tak", "id": "0-6-4z5727104", "slug": "tumm-se-tumm-tak"},
     {"name": "Humari Radha", "id": "0-6-4z5990458", "slug": "humari-radha"},
     {"name": "Tu Hi Re Dil Mein", "id": "0-6-4z5906051", "slug": "tu-hi-re-dil-mein"},
-    {"name": "Lakshmi Niwas", "id": "0-6-4z5666067", "slug": "lakshmi-niwas"},
+    {"name": "Lakshmi Nivas", "id": "0-6-4z5891598", "slug": "lakshmi-nivas"},
     {"name": "Ganga Mai Ki Betiyan", "id": "0-6-4z5793364", "slug": "ganga-mai-ki-betiyan"},
     {"name": "Vasudha", "id": "0-6-4z5612471", "slug": "vasudha"},
     {"name": "Sach Subhash Chandra Show", "id": "0-6-4z5865856", "slug": "sach-subhash-chandra-show"},
@@ -258,6 +258,13 @@ def fetch_zee5_page_html(url):
     return ""
 
 
+def _zee5_season(it):
+    ps = it.get("partOfSeason")
+    if isinstance(ps, dict) and ps.get("seasonNumber") not in (None, ""):
+        return ps["seasonNumber"]
+    return it.get("seasonNumber")
+
+
 def fetch_zee5_episodes(show):
     """Show ke episodes extract karta hai."""
     url = ZEE5_PAGE.format(**show)
@@ -295,6 +302,9 @@ def fetch_zee5_episodes(show):
                     "image": it.get("image") or "",
                     "desc": it.get("description") or "",
                     "number": it.get("episodeNumber"),
+                    "season": _zee5_season(it),
+                    "date": it.get("uploadDate") or it.get("datePublished") or it.get("dateCreated") or "",
+                    "keys": sorted(it.keys()),
                 })
 
     if not eps:
@@ -319,25 +329,39 @@ def fetch_zee5_episodes(show):
     return eps
 
 
+def zee5_release_date(e):
+    m = re.search(r"([A-Z][a-z]+ \d{1,2}, \d{4})", e.get("title") or "")
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%B %d, %Y").strftime("%d %B %Y")
+        except ValueError:
+            pass
+    try:
+        return datetime.strptime((e.get("date") or "")[:10], "%Y-%m-%d").strftime("%d %B %Y")
+    except ValueError:
+        return datetime.now(IST).strftime("%d %B %Y")
+
+
 def zee5_caption(show, e):
-    when = datetime.now(IST).strftime("%d %B %Y")
     lines = [
-        "#NewEpisode #DMT #ZEE5 #Notification",
+        "#NewEpisode #ZEE5 #Notification",
         "",
-        f"<b>Show Name: {html.escape(show['name'], quote=False)}</b>",
+        f"Show Name: {html.escape(show['name'], quote=False)}",
     ]
+    season = e.get("season")
+    if season not in (None, ""):
+        try:
+            lines.append(f"Season Number: {int(season):02d}")
+        except (TypeError, ValueError):
+            lines.append(f"Season Number: {html.escape(str(season), quote=False)}")
     if e.get("number"):
-        lines.append(f"<b>Episode Number: {html.escape(str(e['number']), quote=False)}</b>")
+        lines.append(f"Episode Number: {html.escape(str(e['number']), quote=False)}")
     lines += [
-        f"<b>Episode Title: {html.escape(e['title'], quote=False)}</b>",
-        f"<b>Release Date: {when}</b>",
-        "<b>Language: Hindi</b>",
-    ]
-    if e.get("desc"):
-        lines += ["", html.escape(e["desc"], quote=False)]
-    lines += [
+        f"Episode Title: {html.escape(e['title'], quote=False)}",
+        f"Release Date: {zee5_release_date(e)}",
+        "Language: Hindi",
         "",
-        "<b>Show Link:</b>",
+        "Show Link:",
         f"<code>{html.escape(e['url'], quote=False)}</code>",
     ]
     return "\n".join(lines)
@@ -616,6 +640,8 @@ def process_zee5_show(show, state):
         return True
 
     for e in pending:
+        if not e.get("number") or e.get("season") in (None, ""):
+            print("  (ZEE5 JSON-LD me season/episode number nahi mila, keys:", e.get("keys"), ")")
         if send_tg(zee5_caption(show, e), zee5_poster(e)):
             seen.append(e["id"])
             state["zee5"][show["id"]] = {"seen": seen[-300:]}
