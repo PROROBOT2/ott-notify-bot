@@ -732,17 +732,32 @@ def parse_jiohotstar_latest(data):
     }
 
 
+
 def fetch_jiohotstar_latest():
     response = requests.post(
         JIOHOTSTAR_START_URL,
         headers=JIOHOTSTAR_HEADERS,
-        json={"deeplink_url": JIOHOTSTAR_DEEPLINK, "app_launch_count": 1},
+        json={
+            "deeplink_url": JIOHOTSTAR_DEEPLINK,
+            "app_launch_count": 1,
+        },
         timeout=35,
     )
+
     print("  JioHotstar BFF status:", response.status_code)
-    response.raise_for_status()
-    data = response.json()
-    episode = parse_jiohotstar_latest(data)
+
+    if response.status_code != 200:
+        # Sirf error ka short preview; poora response log nahi karna.
+        print(
+            "  JioHotstar error preview:",
+            response.text[:300].replace("\n", " ")
+        )
+        raise RuntimeError(
+            f"JioHotstar HTTP {response.status_code}"
+        )
+
+    episode = parse_jiohotstar_latest(response.json())
+
     print(
         "  JioHotstar latest:",
         episode["title"],
@@ -750,6 +765,7 @@ def fetch_jiohotstar_latest():
         "| ID", episode["id"],
     )
     return episode
+
 
 
 def jiohotstar_caption(episode):
