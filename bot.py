@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -65,12 +65,20 @@ ZEE5_SHOWS = [
 ZEE5_PAGE = "https://www.zee5.com/tv-shows/details/{slug}/{id}"
 
 # ---------------------------------------------------------------
-# DANGAL PLAY SHOWS: series_id kaise nikalna hai:
-# show page pe F12 -> Network -> filter me 'seriesId' likho -> URL me seriesId/<number>
+# DANGAL PLAY SHOWS: neeche list me link ya series_id do
 # ---------------------------------------------------------------
 DANGAL_SHOWS = [
     {"name": "Kaisi Teri Dillagi", "series_id": 1739},
+    {"name": "Ishq Junooni", "link": "https://www.dangalplay.com/shows/ishq-junooni/ep-31-60/ishq-junooni-ep-number-31"},
+    {"name": "Sohni", "link": "https://www.dangalplay.com/home/sohni-ep-01-digital"},
+    {"name": "Rimjhim", "link": "https://www.dangalplay.com/shows/rimjhim/ep-1-30/rimjhim-ep-number-01"},
+    {"name": "Mann Atisundar", "link": "https://www.dangalplay.com/shows/mann-atisundar/ep-1-30/mann-atisundar-ep-number-01-1"},
+    {"name": "Pati Bhramachari", "link": "https://www.dangalplay.com/shows/pati-bhramachari/ep-1-30-1/pati-bhramachari-ep-number-01"},
+    {"name": "Hamari Bhabhi Number 1", "link": "https://www.dangalplay.com/shows/hamari-bhabhi-number-1/ep-1-30/hamari-bhabhi-number-1-ep-number-01"},
+    {"name": "Mann Sundar", "link": "https://www.dangalplay.com/shows/mann-sundar-ep-number-01"},
 ]
+# Naya show: ya toh {"name": "...", "link": "<us show ke kisi bhi episode ka link>"}
+# (bot link se series_id khud nikaal leta hai), ya {"name": "...", "series_id": NUMBER}.
 
 API_BASE = (
     "https://apiv3.sonyliv.com/AGL/4.8/A/ENG/WEB/IN/RJ/TRAY/SEARCH/VOD"
@@ -419,17 +427,68 @@ def dangal_released(ep):
         return True
 
 
+def dangal_newest_season_id(seasons):
+    """Season title 'Ep 61-90' jaisa hota hai: jiska upper number sabse bada, wahi sabse naya."""
+    best, best_n = seasons[0]["seasonID"], -1
+    for s in seasons:
+        nums = [int(x) for x in re.findall(r"\d+", s.get("seasonTitle", ""))]
+        if nums and max(nums) > best_n:
+            best, best_n = s["seasonID"], max(nums)
+    return best
+
+
 def dangal_latest_episodes(series_id, token):
     """Released episodes, purane se naye order me (last = sabse naya)."""
     seasons = dangal_api_get(
         f"season/list/seriesId/{series_id}/limit/10/offset/0", token
     )["season"]
-    season_id = seasons[0]["seasonID"]  # pehla season = sabse naya (site bhi yahi karti hai)
-    eps = dangal_api_get(
-        f"user/content/list/seasonId/{season_id}/limit/10/offset/0", token
-    )["content"]
+    if not seasons:
+        return []
+    season_id = dangal_newest_season_id(seasons)
+    base = f"user/content/list/seasonId/{season_id}/limit/10"
+    page = dangal_api_get(f"{base}/offset/0", token)
+    eps = page.get("content", [])
+    total = int(page.get("totalCount") or len(eps))
+    if total > len(eps) and len(eps) > 1 and int(eps[0]["id"]) < int(eps[-1]["id"]):
+        # list purane->naye order me aayi, toh sabse naye episodes aakhri page pe hote hain
+        eps = dangal_api_get(f"{base}/offset/{total - 10}", token).get("content", [])
     eps = [e for e in eps if e.get("contentType") == "video" and dangal_released(e)]
     return sorted(eps, key=lambda e: int(e["id"]))
+
+
+def dangal_slug_candidates(link):
+    parts = [p for p in urlparse(link).path.split("/") if p]
+    cands = []
+    if parts:
+        cands.append(parts[-1])
+    if len(parts) >= 2 and parts[0] == "shows":
+        cands.append(parts[1])
+    return list(dict.fromkeys(cands))
+
+
+def dangal_series_id(show, state, token):
+    """Link se series_id nikalta hai (ek baar nikal gaya toh state me save ho jata hai)."""
+    if show.get("series_id"):
+        return int(show["series_id"])
+    link = show.get("link", "")
+    cached = state["dangal_series"].get(link)
+    if cached:
+        return int(cached)
+    errors = []
+    for slug in dangal_slug_candidates(link):
+        try:
+            c = dangal_api_get(
+                f"content/detail/slug/{quote(slug, safe='')}", token
+            ).get("content") or {}
+            sid = c.get("seriesID") or c.get("seriesId")
+            if sid:
+                state["dangal_series"][link] = int(sid)
+                save_state(state)
+                return int(sid)
+            errors.append(f"{slug}: seriesID nahi mila")
+        except Exception as e:
+            errors.append(f"{slug}: {e}")
+    raise RuntimeError("series_id nahi mila (" + "; ".join(errors) + ")")
 
 
 def dangal_poster(ep_id):
@@ -493,6 +552,7 @@ def load_state():
     state.setdefault("shows", {})
     state.setdefault("zee5", {})
     state.setdefault("dangal", {})
+    state.setdefault("dangal_series", {})
     return state
 
 
@@ -566,13 +626,15 @@ def process_zee5_show(show, state):
 
 
 def process_dangal_show(show, state, token):
-    eps = dangal_latest_episodes(show["series_id"], token)
+    series_id = dangal_series_id(show, state, token)
+    eps = dangal_latest_episodes(series_id, token)
     if not eps:
-        print("  Koi episode nahi mila (series_id check karo)")
+        print(f"  Koi episode nahi mila (series_id {series_id})")
         return False
-    print(f"  Latest on API: {eps[-1]['title']} | released: {len(eps)}")
+    show = {**show, "name": show.get("name") or eps[-1].get("seriesTitle") or "Dangal Play Show"}
+    print(f"  series_id {series_id} | Latest on API: {eps[-1]['title']} | released: {len(eps)}")
 
-    key = str(show["series_id"])
+    key = str(series_id)
     rec = state["dangal"].get(key)
     if rec is None:
         pending = eps[-1:]          # pehli baar: sirf sabse naya episode
