@@ -177,6 +177,36 @@
   "dangal": {
     "1739": {
       "last_id": 262870
+    },
+    "386": {
+      "last_id": 262867
+    },
+    "1741": {
+      "last_id": 262869
+    },
+    "634": {
+      "last_id": 262379
+    },
+    "636": {
+      "last_id": 262873
+    },
+    "637": {
+      "last_id": 262866
+    },
+    "1738": {
+      "last_id": 262863
+    },
+    "635": {
+      "last_id": 238050
     }
+  },
+  "dangal_series": {
+    "https://www.dangalplay.com/shows/ishq-junooni/ep-31-60/ishq-junooni-ep-number-31": 386,
+    "https://www.dangalplay.com/home/sohni-ep-01-digital": 1741,
+    "https://www.dangalplay.com/shows/rimjhim/ep-1-30/rimjhim-ep-number-01": 634,
+    "https://www.dangalplay.com/shows/mann-atisundar/ep-1-30/mann-atisundar-ep-number-01-1": 636,
+    "https://www.dangalplay.com/shows/pati-bhramachari/ep-1-30-1/pati-bhramachari-ep-number-01": 637,
+    "https://www.dangalplay.com/shows/hamari-bhabhi-number-1/ep-1-30/hamari-bhabhi-number-1-ep-number-01": 1738,
+    "https://www.dangalplay.com/shows/mann-sundar-ep-number-01": 635
   }
 }
