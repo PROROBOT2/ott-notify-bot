@@ -1,5 +1,6 @@
 """SonyLIV + ZEE5 + Dangal Play serials -> Telegram notifier (multi-show)."""
 import html
+import base64
 import json
 import os
 import re
@@ -559,6 +560,265 @@ def dangal_caption(show, e):
 
 
 # =================================================================
+# JIOHOTSTAR: Yeh Rishta Kya Kehlata Hai
+# Added separately; existing SonyLIV, ZEE5 and Dangal Play logic is preserved.
+# =================================================================
+JIOHOTSTAR_SHOW_NAME = "Yeh Rishta Kya Kehlata Hai"
+JIOHOTSTAR_SHOW_URL = "https://www.hotstar.com/in/shows/yeh-rishta/586"
+JIOHOTSTAR_START_URL = "https://www.hotstar.com/api/internal/bff/v2/start"
+JIOHOTSTAR_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Origin": "https://www.hotstar.com",
+    "Referer": JIOHOTSTAR_SHOW_URL,
+    "x-country-code": "in",
+    "x-hs-platform": "web",
+    "x-hs-client": (
+        "platform:web;app_version:26.09.23.1;browser:Chrome;"
+        "schema_version:0.0.1797;os:Windows;os_version:10;"
+        "browser_version:145;network_data:4g"
+    ),
+}
+# This deeplink format follows the page request captured in the supplied HAR.
+JIOHOTSTAR_DEEPLINK = (
+    "/in/shows/yeh-rishta/586?client_capabilities="
+    "%7B%22ads%22%3A%5B%22non_ssai%22%5D%2C%22audio_channel%22%3A"
+    "%5B%22stereo%22%5D%2C%22container%22%3A%5B%22fmp4%22%2C%22fmp4br%22"
+    "%2C%22ts%22%5D%2C%22dvr%22%3A%5B%22short%22%5D%2C%22dynamic_range%22"
+    "%3A%5B%22sdr%22%5D%2C%22encryption%22%3A%5B%22widevine%22%2C%22plain"
+    "%22%5D%2C%22ladder%22%3A%5B%22web%22%2C%22tv%22%2C%22phone%22%5D%2C"
+    "%22package%22%3A%5B%22dash%22%2C%22hls%22%5D%2C%22resolution%22%3A"
+    "%5B%22sd%22%2C%22hd%22%2C%22fhd%22%5D%2C%22video_codec%22%3A"
+    "%5B%22h264%22%5D%2C%22video_codec_non_secure%22%3A%5B%22h265%22%2C"
+    "%22h264%22%5D%7D&drm_parameters=%7B%22hdcp_version%22%3A%5B%22HDCP_V2_2"
+    "%22%5D%2C%22widevine_security_level%22%3A%5B%22SW_SECURE_DECODE%22%5D"
+    "%2C%22playready_security_level%22%3A%5B%5D%7D"
+)
+
+
+def _hotstar_walk_strings(obj):
+    """Yield strings recursively from a Hotstar BFF response."""
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _hotstar_walk_strings(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _hotstar_walk_strings(value)
+    elif isinstance(obj, str):
+        yield obj
+
+
+def parse_jiohotstar_latest(data):
+    """Extract latest episode metadata from the public show-page response."""
+    page = (data.get("success") or {}).get("page") or {}
+    spaces = page.get("spaces") or {}
+    hero_space = spaces.get("hero") or {}
+    wrappers = hero_space.get("widget_wrappers") or []
+    hero = None
+    for wrapper in wrappers:
+        widget = wrapper.get("widget") or {}
+        if widget.get("@type", "").endswith("HeroGECWidget"):
+            hero = widget.get("data") or {}
+            break
+    if not hero:
+        raise RuntimeError("Hotstar response mein show hero nahi mila")
+
+    content_info = hero.get("content_info") or {}
+    cta = hero.get("primary_cta") or {}
+    actions = (cta.get("actions") or {}).get("on_click") or []
+    nav = next(
+        (item.get("page_navigation") for item in actions
+         if isinstance(item, dict) and item.get("page_navigation")),
+        None,
+    )
+    if not nav:
+        raise RuntimeError("Hotstar response mein latest episode link nahi mila")
+
+    page_url = nav.get("page_url") or ""
+    page_slug = nav.get("page_slug") or ""
+    match = re.search(r"[?&]content_id=(\d+)", page_url)
+    episode_id = match.group(1) if match else ""
+    if not episode_id:
+        match = re.search(r"/(\d+)/watch(?:\?|$)", page_slug)
+        episode_id = match.group(1) if match else ""
+    if not episode_id:
+        raise RuntimeError("Hotstar response mein episode ID nahi mila")
+
+    # The CTA's tracking value includes the exact episode title and a chapter label.
+    title = ""
+    chapter = ""
+    for item in actions:
+        track = (item.get("hs_track") or {}) if isinstance(item, dict) else {}
+        override = track.get("override_context") or {}
+        encoded = override.get("value") or ""
+        if encoded:
+            try:
+                decoded = base64.b64decode(encoded + "=" * (-len(encoded) % 4))
+                strings = [
+                    bit.decode("utf-8", "ignore")
+                    for bit in re.findall(rb"[\x20-\x7e]{4,}", decoded)
+                ]
+                for value in strings:
+                    if re.fullmatch(r"Chapter\s+\d+", value, re.I):
+                        chapter = value
+                    if not title and value.lower() not in {
+                        "watch latest episode", "verticalcontentposterwidget",
+                        "contentdetailpage/herogecwidget", JIOHOTSTAR_SHOW_NAME.lower(),
+                        "episode", "drama", "starplus", "hindi", "hin",
+                    } and not value.isdigit() and not value.startswith("image_variant="):
+                        if " " in value and len(value) < 120 and not value.startswith("pn"):
+                            # The episode title appears before the show title in the CTA payload.
+                            if value.lower() != JIOHOTSTAR_SHOW_NAME.lower():
+                                title = value
+            except Exception:
+                pass
+
+    if not title and page_slug:
+        parts = page_slug.split("/")
+        try:
+            title_slug = parts[parts.index("586") + 1]
+            title = title_slug.replace("-", " ").title()
+            title = re.sub(r"\bMadhavs\b", "Madhav's", title, flags=re.I)
+        except (ValueError, IndexError):
+            title = "Latest Episode"
+    if not title:
+        title = "Latest Episode"
+
+    # Date label is normally e.g. "19 Oct". Use the page's label, not run time.
+    date_label = cta.get("sublabel") or ""
+    if not date_label:
+        alt_label = ((cta.get("alt") or {}).get("label") or "")
+        date_label = re.sub(r"^Watch Latest Episode,\s*", "", alt_label, flags=re.I)
+    release_date = ""
+    if date_label:
+        for fmt in ("%d %b", "%d %B"):
+            try:
+                parsed = datetime.strptime(f"{date_label} {datetime.now(IST).year}", fmt + " %Y")
+                # If the page label is near New Year, adjust the year sensibly.
+                now_local = datetime.now(IST)
+                if parsed.date() > now_local.date() and (parsed - now_local).days > 180:
+                    parsed = parsed.replace(year=parsed.year - 1)
+                release_date = parsed.strftime("%d %B %Y")
+                break
+            except ValueError:
+                continue
+    if not release_date:
+        release_date = datetime.now(IST).strftime("%d %B %Y")
+
+    image_src = ""
+    try:
+        image_src = (
+            nav.get("params", {}).get("watch_params", {})
+            .get("loading_image", {}).get("src", "")
+        )
+    except AttributeError:
+        pass
+    poster_url = (
+        "https://img10.hotstar.com/image/upload/f_auto,q_90,w_1280/" + image_src
+        if image_src else ""
+    )
+    episode_url = "https://www.hotstar.com" + page_slug.split("?")[0]
+    return {
+        "id": episode_id,
+        "title": title,
+        "chapter": chapter,
+        "release_date": release_date,
+        "url": episode_url,
+        "poster_url": poster_url,
+    }
+
+
+def fetch_jiohotstar_latest():
+    response = requests.post(
+        JIOHOTSTAR_START_URL,
+        headers=JIOHOTSTAR_HEADERS,
+        json={"deeplink_url": JIOHOTSTAR_DEEPLINK, "app_launch_count": 1},
+        timeout=35,
+    )
+    print("  JioHotstar BFF status:", response.status_code)
+    response.raise_for_status()
+    data = response.json()
+    episode = parse_jiohotstar_latest(data)
+    print(
+        "  JioHotstar latest:",
+        episode["title"],
+        "|", episode["release_date"],
+        "| ID", episode["id"],
+    )
+    return episode
+
+
+def jiohotstar_caption(episode):
+    lines = [
+        "#NewEpisode #DMT #JioHotstar #Notification",
+        "",
+        f"<b>Show Name: {html.escape(JIOHOTSTAR_SHOW_NAME, quote=False)}</b>",
+    ]
+    if episode.get("chapter"):
+        lines.append(
+            f"<b>Episode/Chapter: {html.escape(episode['chapter'], quote=False)}</b>"
+        )
+    lines += [
+        f"<b>Episode Title: {html.escape(episode['title'], quote=False)}</b>",
+        f"<b>Release Date: {html.escape(episode['release_date'], quote=False)}</b>",
+        "<b>Language: Hindi</b>",
+        "",
+        "<b>Official Episode Link:</b>",
+        f"<code>{html.escape(episode['url'], quote=False)}</code>",
+    ]
+    return "\n".join(lines)
+
+
+def jiohotstar_poster(episode):
+    url = episode.get("poster_url") or ""
+    if not url:
+        return None
+    headers = {
+        "User-Agent": JIOHOTSTAR_HEADERS["User-Agent"],
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        "Referer": JIOHOTSTAR_SHOW_URL,
+    }
+    candidates = [url]
+    fallback = url.replace("f_auto,q_90,w_1280", "f_auto,h_156")
+    if fallback != url:
+        candidates.append(fallback)
+    for candidate in candidates:
+        try:
+            response = requests.get(candidate, headers=headers, timeout=25)
+            if response.status_code == 200 and response.content:
+                return response.content
+            print("  JioHotstar poster HTTP:", response.status_code)
+        except requests.RequestException as exc:
+            print("  JioHotstar poster error:", exc)
+    return None
+
+
+def process_jiohotstar_show(state):
+    episode = fetch_jiohotstar_latest()
+    rec = state["jiohotstar"].get("yeh-rishta-kya-kehlata-hai")
+    if rec and str(rec.get("last_episode_id")) == str(episode["id"]):
+        print("  JioHotstar: Naya episode nahi")
+        return True
+
+    poster = jiohotstar_poster(episode)
+    success = send_tg(jiohotstar_caption(episode), poster)
+    if not success:
+        return False
+    state["jiohotstar"]["yeh-rishta-kya-kehlata-hai"] = {
+        "last_episode_id": episode["id"],
+        "last_episode_title": episode["title"],
+        "last_release_date": episode["release_date"],
+    }
+    save_state(state)
+    return True
+
+
+
+# =================================================================
 # STATE
 # =================================================================
 def load_state():
@@ -577,6 +837,7 @@ def load_state():
     state.setdefault("zee5", {})
     state.setdefault("dangal", {})
     state.setdefault("dangal_series", {})
+    state.setdefault("jiohotstar", {})
     return state
 
 
@@ -721,6 +982,12 @@ def main():
                             ok += 1
                     except Exception as e:
                         print("  ERROR:", e)
+    print(f"== [JioHotstar] {JIOHOTSTAR_SHOW_NAME}")
+    try:
+        if process_jiohotstar_show(state):
+            ok += 1
+    except Exception as e:
+        print("  JIOHOTSTAR ERROR:", repr(e))
     save_state(state)
     if ok == 0:
         print("Koi bhi show kaam nahi kiya")
