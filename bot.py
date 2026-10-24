@@ -11,17 +11,13 @@ import gzip
 import datetime
 import re
 import urllib.request
-import xml.etree.ElementTree as ET
 from curl_cffi import requests as cf_requests
 
-# ── Config ─────────────────────────────────────────────────────────────────
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 STATE_FILE = "state.json"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SONYLIV
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ SONYLIV ══════════════════════════════════════════════════════════════════
 SHOWS = [
     {"name": "Shrimad Ramayan",            "id": "1700000537"},
     {"name": "Pukaar",                     "id": "1700000741"},
@@ -38,18 +34,14 @@ def fetch_episodes(show):
         f"https://apiv2.sonyliv.com/AGL/1.4/A/ENG/WEB/IN/DL/CONTENT/VIDEOURL/VOD/"
         f"{show['id']}?sortOrder=desc&size=1"
     )
-    req = urllib.request.Request(url, headers={
-        "User-Agent":     "Mozilla/5.0",
+    r = cf_requests.get(url, impersonate="chrome110", timeout=15, headers={
         "security_token": "1234567890",
         "app_version":    "3.4.9",
         "content-type":   "application/json",
     })
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read())
+    return r.json()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ZEE5
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ ZEE5 ═════════════════════════════════════════════════════════════════════
 ZEE5_SHOWS = [
     {"name": "Bhagya Lakshmi",                      "id": "0-6-3z5v58289-ep"},
     {"name": "Kumkum Bhagya",                       "id": "0-6-3z5v58292-ep"},
@@ -62,19 +54,13 @@ ZEE5_SHOWS = [
     {"name": "Brahmarakshas",                       "id": "0-6-3z5v00149-ep"},
 ]
 
-def fetch_zee5_page_html(show_id):
-    url = f"https://www.zee5.com/shows/details/{show_id}"
+def fetch_zee5_episodes(show):
+    url = f"https://www.zee5.com/shows/details/{show['id']}"
     r = cf_requests.get(url, impersonate="chrome110", timeout=20, headers={
         "Accept-Language": "en-IN,en;q=0.9",
         "Referer":         "https://www.zee5.com/",
     })
-    return r.text
-
-def fetch_zee5_episodes(show):
-    html = fetch_zee5_page_html(show["id"])
-    match = re.search(
-        r'<script type="application/ld\+json">(.*?)</script>', html, re.DOTALL
-    )
+    match = re.search(r'<script type="application/ld\+json">(.*?)</script>', r.text, re.DOTALL)
     if not match:
         return []
     try:
@@ -90,9 +76,7 @@ def fetch_zee5_episodes(show):
         episodes.append(data)
     return episodes
 
-# ══════════════════════════════════════════════════════════════════════════════
-# JIOHOTSTAR
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ JIOHOTSTAR ════════════════════════════════════════════════════════════════
 HOTSTAR_SHOWS = [
     {"name": "Bigg Boss",                         "id": "1971002586"},
     {"name": "Roadies Rebirth",                   "id": "1971002274"},
@@ -108,7 +92,7 @@ HOTSTAR_SHOWS = [
     {"name": "Sayoneee",                          "id": "1271666144"},
 ]
 
-_HS_API_HEADERS = {
+_HS_API_H = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept":          "application/json",
     "x-country-code":  "IN",
@@ -116,12 +100,13 @@ _HS_API_HEADERS = {
     "x-tenant-id":     "in",
     "Accept-Encoding": "gzip",
 }
-_HS_SMAP_HEADERS = {
+_HS_SMAP_H = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept-Encoding": "gzip, deflate",
 }
-_HS_CDN = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x"
-_hs_cache: dict = {}  # show_id -> list of {url, lastmod, ep_id}
+_HS_CDN         = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x"
+_hs_cache       = {}
+_hs_cache_built = False   # ← separate flag (empty dict {} is falsy in Python!)
 
 
 def _hs_raw(url, headers):
@@ -134,28 +119,23 @@ def _hs_raw(url, headers):
 
 
 def _hs_json(url):
-    return json.loads(_hs_raw(url, _HS_API_HEADERS))
+    return json.loads(_hs_raw(url, _HS_API_H))
 
 
 def _build_hs_cache():
-    """Download all 9 Hotstar episode sitemaps once; populate _hs_cache."""
-    global _hs_cache
-    if _hs_cache:
+    global _hs_cache, _hs_cache_built
+    if _hs_cache_built:
         return
+    _hs_cache_built = True
     show_ids = {s["id"] for s in HOTSTAR_SHOWS}
-    ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     for i in range(1, 10):
         url = f"https://www.hotstar.com/in/new-sitemap-EPISODE-{i}.xml"
         try:
-            root = ET.fromstring(_hs_raw(url, _HS_SMAP_HEADERS))
-            for u in root.findall(f"{{{ns}}}url"):
-                loc_el     = u.find(f"{{{ns}}}loc")
-                lastmod_el = u.find(f"{{{ns}}}lastmod")
-                if loc_el is None:
-                    continue
-                loc     = loc_el.text
-                lastmod = lastmod_el.text if lastmod_el is not None else "1970-01-01"
-                # /in/shows/<slug>/<show_id>/<ep-slug>/<ep_id>/watch
+            xml = _hs_raw(url, _HS_SMAP_H)
+            # Regex instead of XML parser — handles invalid XML tokens
+            locs     = re.findall(r'<loc>(.*?)</loc>', xml)
+            lastmods = re.findall(r'<lastmod>(.*?)</lastmod>', xml)
+            for loc, lastmod in zip(locs, lastmods):
                 parts = loc.rstrip("/").split("/")
                 try:
                     idx = parts.index("shows")
@@ -168,25 +148,22 @@ def _build_hs_cache():
                         })
                 except (ValueError, IndexError):
                     pass
+            print(f"[HS] Sitemap {i}: OK")
         except Exception as e:
-            print(f"[HS] sitemap {i} error: {e}")
+            print(f"[HS] Sitemap {i} error: {e}")
 
 
 def fetch_hotstar_latest(show):
-    """Returns episode dict or None."""
     _build_hs_cache()
-    sid  = show["id"]
-    eps  = _hs_cache.get(sid, [])
+    sid = show["id"]
+    eps = _hs_cache.get(sid, [])
     if not eps:
         return None
-
     latest = sorted(eps, key=lambda x: x["lastmod"], reverse=True)[0]
     ep_id  = latest["ep_id"]
-
     try:
-        data = _hs_json(f"https://api.hotstar.com/o/v2/content/{ep_id}")
-        item = data.get("body", {}).get("results", {}).get("item", {})
-
+        data  = _hs_json(f"https://api.hotstar.com/o/v2/content/{ep_id}")
+        item  = data.get("body", {}).get("results", {}).get("item", {})
         title = item.get("title", "")
         ep_no = item.get("episodeNo", "")
         bcast = item.get("broadCastDate") or item.get("startDate") or 0
@@ -195,8 +172,6 @@ def fetch_hotstar_latest(show):
                               .strftime("%d %b %Y")
             if bcast else latest["lastmod"]
         )
-
-        # Episode image, fallback to show poster
         img_url = None
         for img_set in item.get("imageSets", []):
             pub = img_set.get("publicUri", "")
@@ -205,9 +180,9 @@ def fetch_hotstar_latest(show):
                 break
         if not img_url:
             try:
-                sdata = _hs_json(f"https://api.hotstar.com/o/v2/content/{sid}")
-                sitem = sdata.get("body", {}).get("results", {}).get("item", {})
-                for img_set in sitem.get("imageSets", []):
+                sd = _hs_json(f"https://api.hotstar.com/o/v2/content/{sid}")
+                si = sd.get("body", {}).get("results", {}).get("item", {})
+                for img_set in si.get("imageSets", []):
                     if img_set.get("imageType") in ("v", "v23", "h"):
                         pub = img_set.get("publicUri", "")
                         if pub:
@@ -215,61 +190,34 @@ def fetch_hotstar_latest(show):
                             break
             except Exception:
                 pass
-
-        return {
-            "title":         title,
-            "episodeNo":     ep_no,
-            "broadcastDate": bd,
-            "imageUrl":      img_url,
-            "watchUrl":      latest["url"],
-            "ep_id":         ep_id,
-        }
-
+        return {"title": title, "episodeNo": ep_no, "broadcastDate": bd,
+                "imageUrl": img_url, "watchUrl": latest["url"], "ep_id": ep_id}
     except Exception as e:
         print(f"[HS] API error ep {ep_id}: {e}")
         parts = latest["url"].rstrip("/").split("/")
         slug  = parts[-3] if len(parts) >= 3 else ""
-        return {
-            "title":         slug.replace("-", " ").title(),
-            "episodeNo":     "",
-            "broadcastDate": latest["lastmod"],
-            "imageUrl":      None,
-            "watchUrl":      latest["url"],
-            "ep_id":         ep_id,
-        }
+        return {"title": slug.replace("-", " ").title(), "episodeNo": "",
+                "broadcastDate": latest["lastmod"], "imageUrl": None,
+                "watchUrl": latest["url"], "ep_id": ep_id}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ TELEGRAM ══════════════════════════════════════════════════════════════════
 def send_telegram(caption: str, photo_url: str | None = None):
     base = f"https://api.telegram.org/bot{BOT_TOKEN}"
     if photo_url:
+        payload = {"chat_id": CHANNEL_ID, "photo": photo_url,
+                   "caption": caption, "parse_mode": "HTML"}
         endpoint = f"{base}/sendPhoto"
-        payload  = {
-            "chat_id":    CHANNEL_ID,
-            "photo":      photo_url,
-            "caption":    caption,
-            "parse_mode": "HTML",
-        }
     else:
+        payload = {"chat_id": CHANNEL_ID, "text": caption,
+                   "parse_mode": "HTML", "disable_web_page_preview": False}
         endpoint = f"{base}/sendMessage"
-        payload  = {
-            "chat_id":                  CHANNEL_ID,
-            "text":                     caption,
-            "parse_mode":               "HTML",
-            "disable_web_page_preview": False,
-        }
     data = json.dumps(payload).encode()
-    req  = urllib.request.Request(
-        endpoint, data=data,
-        headers={"Content-Type": "application/json"}
-    )
+    req  = urllib.request.Request(endpoint, data=data,
+                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read())
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STATE
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ STATE ═════════════════════════════════════════════════════════════════════
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
@@ -285,29 +233,24 @@ def save_state(state: dict):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ MAIN ══════════════════════════════════════════════════════════════════════
 def main():
     state = load_state()
     sent  = 0
 
-    # ── SonyLIV ──────────────────────────────────────────────────────────────
+    # SonyLIV
     for show in SHOWS:
         try:
             data  = fetch_episodes(show)
-            items = (
-                data.get("resultObj", {})
-                    .get("content", [{}])[0]
-                    .get("episodeList", [])
-            )
+            items = (data.get("resultObj", {})
+                        .get("content", [{}])[0]
+                        .get("episodeList", []))
             if not items:
                 continue
             ep    = items[0]
             ep_id = str(ep.get("id", ""))
             if not ep_id or state["shows"].get(show["id"]) == ep_id:
                 continue
-
             title    = ep.get("episodeTitle", "")
             ep_no    = ep.get("episodeNumber", "")
             season   = ep.get("season", "")
@@ -331,7 +274,7 @@ def main():
         except Exception as e:
             print(f"[SonyLIV] {show['name']}: {e}")
 
-    # ── ZEE5 ─────────────────────────────────────────────────────────────────
+    # ZEE5
     for show in ZEE5_SHOWS:
         try:
             episodes = fetch_zee5_episodes(show)
@@ -341,7 +284,6 @@ def main():
             ep_id = ep.get("identifier", ep.get("url", ""))
             if not ep_id or state["zee5"].get(show["id"]) == ep_id:
                 continue
-
             title    = ep.get("name", "")
             ep_no    = ep.get("episodeNumber", "")
             season   = ep.get("partOfSeason", {}).get("seasonNumber", "")
@@ -367,7 +309,7 @@ def main():
         except Exception as e:
             print(f"[ZEE5] {show['name']}: {e}")
 
-    # ── JioHotstar ────────────────────────────────────────────────────────────
+    # JioHotstar
     for show in HOTSTAR_SHOWS:
         try:
             ep = fetch_hotstar_latest(show)
@@ -376,7 +318,6 @@ def main():
             ep_id = ep["ep_id"]
             if state["hotstar"].get(show["id"]) == ep_id:
                 continue
-
             ep_line = f"📺 Episode {ep['episodeNo']}\n" if ep["episodeNo"] else ""
             caption = (
                 f"🎬 <b>{show['name']}</b>\n"
