@@ -1,756 +1,4243 @@
-"""SonyLIV + ZEE5 + Dangal Play serials -> Telegram notifier (multi-show)."""
-import html
-import json
 import os
-import re
 import sys
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote, urlparse
+import asyncio
+import http.server
+import socketserver
+import threading
+import re
+import logging
+import html
+import time
+from collections import OrderedDict
 
-import requests
-
-try:
-    from curl_cffi import requests as cffi_requests
-    HAS_CURL_CFFI = True
-except ImportError:
-    HAS_CURL_CFFI = False
-
-# Dangal Play ka response AES se encrypted aata hai. 'cryptography' install na ho toh
-# sirf Dangal wala hissa skip hoga, baaki bot (SonyLIV/ZEE5) bilkul normal chalega.
-try:
-    from cryptography.hazmat.primitives import padding as _padding
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    HAS_CRYPTO = True
-except ImportError:
-    HAS_CRYPTO = False
-
-# ---------------------------------------------------------------
-# SONYLIV SHOWS: (naam, show_id, link wala slug)
-# link: https://www.sonyliv.com/shows/<slug>-<show_id>
-# ---------------------------------------------------------------
-SHOWS = [
-    {"name": "Taarak Mehta Ka Ooltah Chashmah", "id": 1700000084,
-     "slug": "taarak-mehta-ka-ooltah-chashmah"},
-    {"name": "Hastinapur Ke Veer", "id": 1790007734,
-     "slug": "hastinapur-ke-veer"},
-    {"name": "Kyunki Papa Kehte Hain", "id": 1790007859,
-     "slug": "kyunki-papa-kehte-hain"},
-    {"name": "Hui Gumm Yaadein Ek Doctor Do Zindagiyaan", "id": 1790006770,
-     "slug": "hui-gumm-yaadein-ek-doctor-do-zindagiyaan"},
-    {"name": "Family Full House with Rohit Sharma", "id": 1790007851,
-     "slug": "family-full-house-with-rohit-sharma"},
-    {"name": "Indian Game Show", "id": 1790007836,
-     "slug": "indian-game-show"},
-    {"name": "Kaun Banega Crorepati", "id": 1700000195,
-     "slug": "kaun-banega-crorepati"},
-    {"name": "Pushpa Impossible", "id": 1700000921,
-     "slug": "pushpa-impossible"},
-]
-
-# ---------------------------------------------------------------
-# ZEE5 SHOWS: show page ka link hota hai
-# https://www.zee5.com/tv-shows/details/<slug>/<id>
-# ---------------------------------------------------------------
-ZEE5_SHOWS = [
-    {"name": "Tumm Se Tumm Tak", "id": "0-6-4z5727104", "slug": "tumm-se-tumm-tak"},
-    {"name": "Humari Radha", "id": "0-6-4z5990458", "slug": "humari-radha"},
-    {"name": "Tu Hi Re Dil Mein", "id": "0-6-4z5906051", "slug": "tu-hi-re-dil-mein"},
-    {"name": "Lakshmi Nivas", "id": "0-6-4z5891598", "slug": "lakshmi-nivas"},
-    {"name": "Ganga Mai Ki Betiyan", "id": "0-6-4z5793364", "slug": "ganga-mai-ki-betiyan"},
-    {"name": "Vasudha", "id": "0-6-4z5612471", "slug": "vasudha"},
-    {"name": "Sach Subhash Chandra Show", "id": "0-6-4z5865856", "slug": "sach-subhash-chandra-show"},
-    {"name": "Dilo Ki Ram Leela", "id": "0-6-4z51028474", "slug": "dilo-ki-ram-leela"},
-    {"name": "Jagadhatri", "id": "0-6-4z5853175", "slug": "jagadhatri"},
-]
-ZEE5_PAGE = "https://www.zee5.com/tv-shows/details/{slug}/{id}"
-
-# ---------------------------------------------------------------
-# DANGAL PLAY SHOWS: neeche list me link ya series_id do
-# ---------------------------------------------------------------
-DANGAL_SHOWS = [
-    {"name": "Kaisi Teri Dillagi", "series_id": 1739},
-    {"name": "Ishq Junooni", "link": "https://www.dangalplay.com/shows/ishq-junooni/ep-31-60/ishq-junooni-ep-number-31"},
-    {"name": "Sohni", "link": "https://www.dangalplay.com/home/sohni-ep-01-digital"},
-    {"name": "Rimjhim", "link": "https://www.dangalplay.com/shows/rimjhim/ep-1-30/rimjhim-ep-number-01"},
-    {"name": "Mann Atisundar", "link": "https://www.dangalplay.com/shows/mann-atisundar/ep-1-30/mann-atisundar-ep-number-01-1"},
-    {"name": "Pati Bhramachari", "link": "https://www.dangalplay.com/shows/pati-bhramachari/ep-1-30-1/pati-bhramachari-ep-number-01"},
-    {"name": "Hamari Bhabhi Number 1", "link": "https://www.dangalplay.com/shows/hamari-bhabhi-number-1/ep-1-30/hamari-bhabhi-number-1-ep-number-01"},
-    {"name": "Mann Sundar", "link": "https://www.dangalplay.com/shows/mann-sundar-ep-number-01"},
-]
-# Naya show: ya toh {"name": "...", "link": "<us show ke kisi bhi episode ka link>"}
-# (bot link se series_id khud nikaal leta hai), ya {"name": "...", "series_id": NUMBER}.
-
-API_BASE = (
-    "https://apiv3.sonyliv.com/AGL/4.8/A/ENG/WEB/IN/RJ/TRAY/SEARCH/VOD"
-    "?objectSubType=ORIGINALS,TV_SHOWS,SPORTS,MOVIES&filter_contentSubtype=EPISODE"
-    "&title={title}&orderBy=originalAirDate&sortOrder=desc"
-    "&isUser=true&ab_segment=AB_DetailPage_Disable&kids_safe=false&kids_age_group=noage"
-    "&segment_id=AB_DetailPage_Disable&utm_medium=organic&isPageV2=true"
-    "&layout=landscape_layout&id=1239_1654&utm_source=google&from=0&to=14"
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
-STATE_FILE = "state.json"
-IST = timezone(timedelta(hours=5, minutes=30))
-
-NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "air")
-
-# TG_BOT_TOKEN / TG_CHAT_ID chalte hain; purane naam BOT_TOKEN / CHANNEL_ID bhi chalenge
-TOKEN = os.environ.get("TG_BOT_TOKEN") or os.environ.get("BOT_TOKEN", "")
-CHAT_ID = os.environ.get("TG_CHAT_ID") or os.environ.get("CHANNEL_ID", "")
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Origin": "https://www.sonyliv.com",
-    "Referer": "https://www.sonyliv.com/",
-}
-ZEE5_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
-    "Referer": "https://www.google.com/",
-    "Upgrade-Insecure-Requests": "1",
-}
+from telegram.constants import ChatMemberStatus, ChatType
+from telegram.error import (
+    RetryAfter,
+    TimedOut,
+    NetworkError,
+    BadRequest,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from pymongo import MongoClient
 
 
-def norm(s):
-    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+# ============================================================
+# UTF-8
+# ============================================================
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 
-# =================================================================
-# SONYLIV
-# =================================================================
-def fetch_episodes(show):
-    url = API_BASE.format(title=quote(show["name"], safe=""))
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"API status {r.status_code}: {r.text[:200]}")
-    data = r.json()
-    if data.get("resultCode") != "OK":
-        raise RuntimeError(f"Unexpected response: {json.dumps(data)[:200]}")
+# ============================================================
+# LOGGING
+# ============================================================
 
-    metas = []
-    for c in data["resultObj"]["containers"]:
-        m = c.get("metadata", {})
-        if m.get("contentSubtype") != "EPISODE" or not m.get("episodeNumber"):
-            continue
-        m["_parents"] = [p.get("parentId") for p in c.get("parents", [])]
-        metas.append(m)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 
-    eps = [m for m in metas if show["id"] in m["_parents"]]
-    if not eps:
-        eps = [m for m in metas if norm(show["name"]) in norm(m.get("title"))]
-        if eps:
-            print(f"  (fallback title match use hua: {show['name']})")
-    eps.sort(key=lambda m: int(m["episodeNumber"]), reverse=True)
-    return eps
+logger = logging.getLogger(__name__)
 
 
-def avail_time(m):
-    if NOTIFY_MODE == "switch":
-        iso = (m.get("emfAttributes", {}).get("entitlementSwitchTime") or {}).get("_in")
-        if iso:
-            return datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    return datetime.fromtimestamp(m["originalAirDate"] / 1000, tz=timezone.utc)
+# ============================================================
+# RENDER HEALTH SERVER
+# ============================================================
 
+def start_dummy_server():
+    port = int(os.environ.get("PORT", "10000"))
 
-def episode_link(show, m):
-    title = re.sub(r"['\u2019`]", "", m.get("episodeTitle", "").lower())
-    slug = re.sub(r"[^a-z0-9]+", "-", title).strip("-")
-    return (
-        f"https://www.sonyliv.com/shows/{show['slug']}-{show['id']}/"
-        f"{slug}-{m['contentId']}?watch=true"
-    )
-
-
-def build_caption(show, m, link):
-    when = avail_time(m).astimezone(IST).strftime("%d %B %Y")
-    lines = [
-        "#NewEpisode #DMT #SONYLIV #Notification",
-        "",
-        f"<b>Show Name: {html.escape(show['name'], quote=False)}</b>",
-    ]
-    season = m.get("season")
-    if season not in (None, ""):
-        try:
-            lines.append(f"<b>Season Number: {int(season):02d}</b>")
-        except (TypeError, ValueError):
-            lines.append(f"<b>Season Number: {html.escape(str(season), quote=False)}</b>")
-    lines += [
-        f"<b>Episode Number: {m['episodeNumber']}</b>",
-        f"<b>Episode Title: {html.escape(m.get('episodeTitle', ''), quote=False)}</b>",
-        f"<b>Release Date: {when}</b>",
-        "<b>Language: Hindi</b>",
-        "",
-        "<b>Show Link:</b>",
-        f"<code>{html.escape(link, quote=False)}</code>",
-    ]
-    return "\n".join(lines)
-
-
-def get_image(url):
-    if not url:
-        return None
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        if r.status_code == 200 and r.content:
-            return r.content
-        print("  Poster download failed:", r.status_code)
-    except requests.RequestException as e:
-        print("  Poster error:", e)
-    return None
-
-
-def get_poster(m):
-    emf = m.get("emfAttributes", {})
-    return get_image(emf.get("landscape_thumb") or emf.get("thumbnail"))
-
-
-def send_tg(caption, poster):
-    base = f"https://api.telegram.org/bot{TOKEN}"
-    if poster:
-        r = requests.post(
-            f"{base}/sendPhoto",
-            data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
-            files={"photo": ("poster.jpg", poster)},
-            timeout=60,
-        )
-    else:
-        r = requests.post(
-            f"{base}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML"},
-            timeout=60,
-        )
-    print("  Telegram status:", r.status_code, r.text[:150])
-    return r.status_code == 200
-
-
-def send_telegram(show, m):
-    link = episode_link(show, m)
-    caption = build_caption(show, m, link)
-    return send_tg(caption, get_poster(m))
-
-
-# =================================================================
-# ZEE5 (Bypass Akamai WAF using Chrome Impersonation)
-# =================================================================
-def fetch_zee5_page_html(url):
-    """Akamai WAF ko bypass karke ZEE5 page lata hai."""
-    if HAS_CURL_CFFI:
-        try:
-            r = cffi_requests.get(
-                url,
-                headers=ZEE5_HEADERS,
-                impersonate="chrome120",
-                timeout=30,
-            )
-            if r.status_code == 200:
-                return r.text
-        except Exception as e:
-            print(f"  [curl_cffi error]: {e}")
-
-    r = requests.get(url, headers=ZEE5_HEADERS, timeout=30)
-    if r.status_code == 200:
-        return r.text
-    return ""
-
-
-def _zee5_season(it):
-    ps = it.get("partOfSeason")
-    if isinstance(ps, dict) and ps.get("seasonNumber") not in (None, ""):
-        return ps["seasonNumber"]
-    return it.get("seasonNumber")
-
-
-def fetch_zee5_episodes(show):
-    """Show ke episodes extract karta hai."""
-    url = ZEE5_PAGE.format(**show)
-    html_text = fetch_zee5_page_html(url)
-    if not html_text:
-        print("  ZEE5 HTML nahi mil saka (Akamai block ya timeout)")
-        return []
-
-    blocks = re.findall(
-        r'<script[^>]*type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>',
-        html_text, re.S,
-    )
-    eps, seen_ids = [], set()
-    for b in blocks:
-        try:
-            data = json.loads(b)
-        except json.JSONDecodeError:
-            continue
-        items_to_check = data if isinstance(data, list) else [data]
-        for d in items_to_check:
-            if not isinstance(d, dict):
-                continue
-            for it in d.get("itemListElement") or []:
-                if isinstance(it, dict) and isinstance(it.get("item"), dict):
-                    it = it["item"]
-                link = (it or {}).get("url") or ""
-                m = re.search(r"(0-1-[0-9a-zA-Z_\-]+)", link)
-                if not m or m.group(1) in seen_ids:
-                    continue
-                seen_ids.add(m.group(1))
-                eps.append({
-                    "id": m.group(1),
-                    "title": it.get("name") or "",
-                    "url": link,
-                    "image": it.get("image") or "",
-                    "desc": it.get("description") or "",
-                    "number": it.get("episodeNumber"),
-                    "season": _zee5_season(it),
-                    "date": it.get("uploadDate") or it.get("datePublished") or it.get("dateCreated") or "",
-                    "keys": sorted(it.keys()),
-                })
-
-    if not eps:
-        matches = re.findall(
-            r'href=[\'"](/tv-shows/details/[^\'"]*?(0-1-[0-9a-zA-Z_\-]+)[^\'"]*?)[\'"]',
-            html_text,
-        )
-        for link, ep_id in matches:
-            if ep_id in seen_ids:
-                continue
-            seen_ids.add(ep_id)
-            full_url = f"https://www.zee5.com{link}"
-            eps.append({
-                "id": ep_id,
-                "title": f"Episode {ep_id}",
-                "url": full_url,
-                "image": "",
-                "desc": "",
-                "number": None,
-            })
-
-    return eps
-
-
-def zee5_release_date(e):
-    m = re.search(r"([A-Z][a-z]+ \d{1,2}, \d{4})", e.get("title") or "")
-    if m:
-        try:
-            return datetime.strptime(m.group(1), "%B %d, %Y").strftime("%d %B %Y")
-        except ValueError:
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
             pass
+
     try:
-        return datetime.strptime((e.get("date") or "")[:10], "%Y-%m-%d").strftime("%d %B %Y")
-    except ValueError:
-        return datetime.now(IST).strftime("%d %B %Y")
+        with socketserver.TCPServer(("", port), QuietHandler) as httpd:
+            logger.info("🌐 Health server started on port %s", port)
+            httpd.serve_forever()
+
+    except Exception as exc:
+        logger.warning("Health server stopped: %s", exc)
 
 
-def zee5_caption(show, e):
-    lines = [
-        "#NewEpisode #ZEE5 #Notification",
-        "",
-        f"Show Name: {html.escape(show['name'], quote=False)}",
-    ]
-    season = e.get("season")
-    if season not in (None, ""):
-        try:
-            lines.append(f"Season Number: {int(season):02d}")
-        except (TypeError, ValueError):
-            lines.append(f"Season Number: {html.escape(str(season), quote=False)}")
-    if e.get("number"):
-        lines.append(f"Episode Number: {html.escape(str(e['number']), quote=False)}")
-    lines += [
-        f"Episode Title: {html.escape(e['title'], quote=False)}",
-        f"Release Date: {zee5_release_date(e)}",
-        "Language: Hindi",
-        "",
-        "Show Link:",
-        f"<code>{html.escape(e['url'], quote=False)}</code>",
-    ]
-    return "\n".join(lines)
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+MONGO_URI = os.environ.get("MONGO_URI", "").strip()
+
+BOT_USERNAME = os.environ.get(
+    "BOT_USERNAME",
+    "DG_Primebot",
+).strip()
+
+if not TOKEN:
+    logger.error("❌ BOT_TOKEN environment variable missing.")
+    sys.exit(1)
+
+if not MONGO_URI:
+    logger.error("❌ MONGO_URI environment variable missing.")
+    sys.exit(1)
 
 
-def zee5_poster(e):
-    url = e.get("image") or ""
-    if not url:
-        return None
-    url = url.replace("f_avif", "f_jpg").replace("w_438,h_254", "w_1000,h_562")
-    return get_image(url)
+# ============================================================
+# MONGODB
+# ============================================================
 
-
-# =================================================================
-# DANGAL PLAY (guest token + encrypted episode list)
-# =================================================================
-DANGAL_SITE = "https://www.dangalplay.com"
-DANGAL_API = "https://dangal-api.dangalplay.com/microplay/v1"
-DANGAL_IMG = "https://img-enterr10.videostech.cloud/thumb"
-DANGAL_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-)
-# Dangal Play ki website ke apne JS wale constants. Site inhe badle toh decrypt fail hoga.
-DANGAL_KEY = b"89H49I12T20E542N17D4E5A47R184LKL"
-DANGAL_IV = b"0543737198408118"
-# Guest token lene ke liye site ke JS me hardcoded app-authorization (HAR sanitize me ye header hat jata hai)
-DANGAL_APP_AUTH = "abd07061a3dd9851e3c9dd551e68e2688c5500a5139a561299a4ffbe40584f233f41d2b974b99122998fad15277a03408953d6e36ee6bbe9186b5cfb2a291f230a926bfef04810c774e7de5e94c5bf5f"
-
-
-def dangal_headers():
-    return {
-        "Origin": DANGAL_SITE,
-        "Referer": DANGAL_SITE + "/",
-        "User-Agent": DANGAL_UA,
-        "Accept": "application/json, text/plain, */*",
-    }
-
-
-def dangal_decrypt(hex_text):
-    dec = Cipher(algorithms.AES(DANGAL_KEY), modes.CBC(DANGAL_IV)).decryptor()
-    raw = dec.update(bytes.fromhex(hex_text)) + dec.finalize()
-    unpad = _padding.PKCS7(128).unpadder()
-    return json.loads(unpad.update(raw) + unpad.finalize())
-
-
-def dangal_get_token():
-    """Bina login ka guest token (roz naya banta hai, bot har run me khud leta hai)."""
-    r = requests.post(
-        f"{DANGAL_API}/generate/authToken/device/desktop/platform/web",
-        json={},
-        headers={**dangal_headers(), "Content-Type": "application/json",
-                 "authorization": DANGAL_APP_AUTH},
-        timeout=30,
+try:
+    db_client = MongoClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=5000,
+        socketTimeoutMS=10000,
     )
-    if r.status_code != 200:
-        raise RuntimeError(f"Dangal token status {r.status_code}: {r.text[:150]}")
-    return r.json()["authToken"]
+
+    db_client.admin.command("ping")
+
+except Exception as exc:
+    logger.error("❌ MongoDB connection failed: %s", exc)
+    sys.exit(1)
 
 
-def dangal_api_get(path, token):
-    headers = {
-        **dangal_headers(),
-        "authtoken": token,
-        "country": "IN",
-        "language": "EN",
-        "state": "Haryana",
-        "city": "Gurgaon",
-        "profileid": "1",
-    }
-    r = requests.get(
-        f"{DANGAL_API}/{path}/device/desktop/platform/web", headers=headers, timeout=30
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Dangal API status {r.status_code}: {r.text[:150]}")
-    j = r.json()
-    if j.get("code") != 1:
-        raise RuntimeError(f"Dangal API code {j.get('code')} for {path}")
-    return dangal_decrypt(j["result"])
+db = db_client["AutoCaptionBotDB"]
+
+channels_col = db["connected_channels"]
+users_col = db["user_settings"]
 
 
-def dangal_released(ep):
-    try:
-        t = datetime.strptime(ep["startDate"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
-        return t <= datetime.now(IST)
-    except Exception:
+# ============================================================
+# ADMIN
+# ============================================================
+
+def parse_admin_ids():
+    raw = os.environ.get("ADMIN_IDS", "").strip()
+
+    ids = set()
+
+    if raw:
+        for part in raw.split(","):
+            part = part.strip()
+
+            if part.isdigit():
+                ids.add(int(part))
+
+    legacy_owner = os.environ.get(
+        "OWNER_ID",
+        "",
+    ).strip()
+
+    if legacy_owner.isdigit():
+        owner_id = int(legacy_owner)
+
+        if owner_id != 0:
+            ids.add(owner_id)
+
+    return ids
+
+
+ADMIN_IDS = parse_admin_ids()
+
+
+def is_admin(user_id: int) -> bool:
+    """
+    If ADMIN_IDS is empty, preserve old open-mode behavior.
+    """
+
+    if not ADMIN_IDS:
         return True
 
-
-def dangal_newest_season_id(seasons):
-    """Season title 'Ep 61-90' jaisa hota hai: jiska upper number sabse bada, wahi sabse naya."""
-    best, best_n = seasons[0]["seasonID"], -1
-    for s in seasons:
-        nums = [int(x) for x in re.findall(r"\d+", s.get("seasonTitle", ""))]
-        if nums and max(nums) > best_n:
-            best, best_n = s["seasonID"], max(nums)
-    return best
+    return user_id in ADMIN_IDS
 
 
-def dangal_latest_episodes(series_id, token):
-    """Released episodes, purane se naye order me (last = sabse naya)."""
-    seasons = dangal_api_get(
-        f"season/list/seriesId/{series_id}/limit/10/offset/0", token
-    )["season"]
-    if not seasons:
-        return []
-    season_id = dangal_newest_season_id(seasons)
-    base = f"user/content/list/seasonId/{season_id}/limit/10"
-    page = dangal_api_get(f"{base}/offset/0", token)
-    eps = page.get("content", [])
-    total = int(page.get("totalCount") or len(eps))
-    if total > len(eps) and len(eps) > 1 and int(eps[0]["id"]) < int(eps[-1]["id"]):
-        # list purane->naye order me aayi, toh sabse naye episodes aakhri page pe hote hain
-        eps = dangal_api_get(f"{base}/offset/{total - 10}", token).get("content", [])
-    eps = [e for e in eps if e.get("contentType") == "video" and dangal_released(e)]
-    return sorted(eps, key=lambda e: int(e["id"]))
+# ============================================================
+# OPTIONAL LOG CHANNEL
+# ============================================================
+
+raw_log_id = os.environ.get(
+    "LOG_CHANNEL_ID",
+    "",
+).strip()
+
+try:
+    LOG_CHANNEL_ID = int(raw_log_id) if raw_log_id else None
+except ValueError:
+    LOG_CHANNEL_ID = None
 
 
-def dangal_slug_candidates(link):
-    parts = [p for p in urlparse(link).path.split("/") if p]
-    cands = []
-    if parts:
-        cands.append(parts[-1])
-    if len(parts) >= 2 and parts[0] == "shows":
-        cands.append(parts[1])
-    return list(dict.fromkeys(cands))
+# ============================================================
+# CAPTION ENGINE CONFIG
+# ============================================================
+
+# IMPORTANT:
+#
+# Old system:
+#
+# 10 parallel edits
+# 10 parallel edits
+# 40 sec cooldown
+#
+# This can create Telegram 429 bursts.
+#
+# New system:
+#
+# ONE edit at a time
+# small controlled delay
+# RetryAfter respected exactly
+#
+# This intentionally prioritizes stability over raw burst speed.
+# ============================================================
+
+ENGINE_VERSION = "2.1"
+
+BOT_START_TIME = time.time()
+
+# Adaptive interval:
+#
+# Starts fast. Speeds up further on every clean edit.
+# Only backs off when Telegram actually returns a 429,
+# then gradually speeds back up again.
+#
+# This replaces the old fixed 1.25s-per-edit pace with
+# something that runs near MIN_EDIT_INTERVAL under normal
+# conditions and only slows down when it truly needs to.
+
+MIN_EDIT_INTERVAL = 0.35
+
+MAX_EDIT_INTERVAL = 3.0
+
+_current_edit_interval = MIN_EDIT_INTERVAL
 
 
-def dangal_series_id(show, state, token):
-    """Link se series_id nikalta hai (ek baar nikal gaya toh state me save ho jata hai)."""
-    if show.get("series_id"):
-        return int(show["series_id"])
-    link = show.get("link", "")
-    cached = state["dangal_series"].get(link)
-    if cached:
-        return int(cached)
-    errors = []
-    for slug in dangal_slug_candidates(link):
-        try:
-            c = dangal_api_get(
-                f"content/detail/slug/{quote(slug, safe='')}", token
-            ).get("content") or {}
-            sid = c.get("seriesID") or c.get("seriesId")
-            if sid:
-                state["dangal_series"][link] = int(sid)
-                save_state(state)
-                return int(sid)
-            errors.append(f"{slug}: seriesID nahi mila")
-        except Exception as e:
-            errors.append(f"{slug}: {e}")
-    raise RuntimeError("series_id nahi mila (" + "; ".join(errors) + ")")
+def get_current_edit_interval():
+    return _current_edit_interval
 
 
-def dangal_poster(ep_id):
-    for w, h in ((1280, 720), (480, 270)):
-        try:
-            r = requests.get(
-                DANGAL_IMG,
-                params={"fn": f"5005_{ep_id}_rectangle_16x9", "w": w, "h": h, "platform": "web"},
-                headers={"Referer": DANGAL_SITE + "/", "User-Agent": DANGAL_UA},
-                timeout=30,
+def speed_up_edit_interval():
+    global _current_edit_interval
+
+    _current_edit_interval = max(
+        MIN_EDIT_INTERVAL,
+        _current_edit_interval * 0.85,
+    )
+
+
+def slow_down_edit_interval(retry_after):
+    global _current_edit_interval
+
+    _current_edit_interval = min(
+        MAX_EDIT_INTERVAL,
+        max(
+            _current_edit_interval * 1.8,
+            retry_after * 0.25,
+        ),
+    )
+
+
+MAX_EDIT_RETRIES = 4
+
+QUEUE_MAX_SIZE = 5000
+
+CONFIG_CACHE_TTL = 30.0
+
+RECENT_APPLIED_LIMIT = 5000
+
+RECENT_APPLIED_TTL = 300.0
+
+
+_caption_queue = asyncio.Queue(
+    maxsize=QUEUE_MAX_SIZE
+)
+
+_caption_worker_task = None
+
+
+# Key:
+# (channel_id, message_id)
+#
+# Value:
+# newest job
+_pending_jobs = {}
+
+
+# Channel config cache
+_config_cache = {}
+
+_config_locks = {}
+
+
+# Recently applied messages
+_recent_applied = OrderedDict()
+
+
+# ============================================================
+# UPTIME
+# ============================================================
+
+def get_uptime_text():
+    elapsed = int(
+        time.time() - BOT_START_TIME
+    )
+
+    days, remainder = divmod(
+        elapsed,
+        86400,
+    )
+
+    hours, remainder = divmod(
+        remainder,
+        3600,
+    )
+
+    minutes, seconds = divmod(
+        remainder,
+        60,
+    )
+
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+
+    if hours:
+        return f"{hours}h {minutes}m"
+
+    if minutes:
+        return f"{minutes}m {seconds}s"
+
+    return f"{seconds}s"
+
+
+# ============================================================
+# RECENT EDIT CACHE
+# ============================================================
+
+def mark_recent_applied(
+    channel_id,
+    message_id,
+    final_plain,
+):
+    key = (
+        channel_id,
+        message_id,
+    )
+
+    _recent_applied[key] = {
+        "text": final_plain,
+        "time": time.monotonic(),
+    }
+
+    _recent_applied.move_to_end(key)
+
+    while len(_recent_applied) > RECENT_APPLIED_LIMIT:
+        _recent_applied.popitem(last=False)
+
+
+def get_recent_applied(
+    channel_id,
+    message_id,
+):
+    key = (
+        channel_id,
+        message_id,
+    )
+
+    item = _recent_applied.get(key)
+
+    if not item:
+        return None
+
+    if (
+        time.monotonic() - item["time"]
+        > RECENT_APPLIED_TTL
+    ):
+        _recent_applied.pop(
+            key,
+            None,
+        )
+        return None
+
+    return item["text"]
+
+
+# ============================================================
+# CONFIG CACHE
+# ============================================================
+
+def invalidate_channel_config_cache(channel_id):
+    _config_cache.pop(
+        channel_id,
+        None,
+    )
+
+
+async def get_cached_channel_config_async(
+    channel_id,
+):
+    now = time.monotonic()
+
+    cached = _config_cache.get(
+        channel_id
+    )
+
+    if (
+        cached
+        and now - cached["time"]
+        < CONFIG_CACHE_TTL
+    ):
+        return cached["config"]
+
+    lock = _config_locks.setdefault(
+        channel_id,
+        asyncio.Lock(),
+    )
+
+    async with lock:
+
+        now = time.monotonic()
+
+        cached = _config_cache.get(
+            channel_id
+        )
+
+        if (
+            cached
+            and now - cached["time"]
+            < CONFIG_CACHE_TTL
+        ):
+            return cached["config"]
+
+        config = await asyncio.to_thread(
+            get_channel_config,
+            channel_id,
+        )
+
+        _config_cache[channel_id] = {
+            "time": time.monotonic(),
+            "config": config,
+        }
+
+        return config
+
+
+# ============================================================
+# IMPORTANT LOGGING
+# ============================================================
+
+async def send_important_log(
+    bot,
+    title,
+    body="",
+    level="INFO",
+):
+    """
+    Only operational events.
+    Routine successful caption edits are NOT sent
+    to the Telegram log channel.
+    """
+
+    if not LOG_CHANNEL_ID:
+        return
+
+    icons = {
+        "INFO": "ℹ️",
+        "SUCCESS": "✅",
+        "WARNING": "⚠️",
+        "ERROR": "❌",
+        "START": "🟢",
+        "STOP": "🔴",
+        "USER": "👤",
+        "CHANNEL": "📢",
+    }
+
+    icon = icons.get(
+        level,
+        "ℹ️",
+    )
+
+    safe_title = html.escape(
+        str(title)
+    )
+
+    safe_body = html.escape(
+        str(body)
+    )
+
+    text = (
+        f"{icon} <b>{safe_title}</b>"
+    )
+
+    if body:
+        text += (
+            f"\n\n{safe_body}"
+        )
+
+    try:
+        await bot.send_message(
+            chat_id=LOG_CHANNEL_ID,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "⚠️ Important log failed: %s",
+            exc,
+        )
+
+
+# ============================================================
+# NEW USER TRACKING
+# ============================================================
+
+async def log_new_user(
+    bot,
+    user,
+):
+    if not user:
+        return
+
+    try:
+        result = await asyncio.to_thread(
+            users_col.update_one,
+            {
+                "_id": str(user.id)
+            },
+            {
+                "$setOnInsert": {
+                    "_id": str(user.id),
+                    "created_at": time.time(),
+                }
+            },
+            upsert=True,
+        )
+
+        if result.upserted_id is not None:
+
+            name = (
+                user.first_name
+                or "User"
             )
-            if (r.status_code == 200 and r.content
-                    and r.headers.get("content-type", "").startswith("image")):
-                return r.content
-            print("  Dangal poster failed:", r.status_code)
-        except requests.RequestException as e:
-            print("  Dangal poster error:", e)
+
+            username = (
+                f"@{user.username}"
+                if user.username
+                else "No username"
+            )
+
+            await send_important_log(
+                bot,
+                "NEW USER",
+                (
+                    f"Name: {name}\n"
+                    f"Username: {username}\n"
+                    f"User ID: {user.id}"
+                ),
+                "USER",
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "⚠️ New-user tracking failed: %s",
+            exc,
+        )
+
+
+# ============================================================
+# DEFAULT CHANNEL CONFIG
+# ============================================================
+
+def default_channel_config(
+    channel_id,
+):
+    return {
+        "_id": str(channel_id),
+
+        "channel_id": channel_id,
+
+        "owner_user_id": None,
+
+        "active": True,
+
+        "title": "",
+
+        "username": "",
+
+        "replacement_rules": {
+            "MovieHub": {
+                "new": "DG_Contents",
+                "added_by": None,
+            },
+            "JoinUs": {
+                "new": "SubscribeNow",
+                "added_by": None,
+            },
+        },
+
+        "custom_header": "",
+
+        "custom_footer": (
+            "⚡ Fast Download Links @DG_Contents"
+        ),
+
+        # When True, any URL/domain left in the caption body
+        # (things Telegram would normally turn blue and
+        # clickable) is defused so it renders as plain bold
+        # text instead of a live link.
+        "link_guard": True,
+
+        "created_at": time.time(),
+    }
+
+
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
+def get_channel_config(
+    channel_id,
+):
+    try:
+        config = channels_col.find_one(
+            {
+                "_id": str(channel_id)
+            }
+        )
+
+        if not config:
+
+            config = default_channel_config(
+                channel_id
+            )
+
+            channels_col.update_one(
+                {
+                    "_id": str(channel_id)
+                },
+                {
+                    "$setOnInsert": config
+                },
+                upsert=True,
+            )
+
+            return config
+
+        return config
+
+    except Exception as exc:
+
+        logger.error(
+            "❌ MongoDB get channel config error: %s",
+            exc,
+        )
+
+        return default_channel_config(
+            channel_id
+        )
+
+
+def update_channel_config(
+    channel_id,
+    field_name,
+    field_value,
+):
+    try:
+        channels_col.update_one(
+            {
+                "_id": str(channel_id)
+            },
+            {
+                "$set": {
+                    field_name: field_value
+                }
+            },
+            upsert=True,
+        )
+
+    except Exception as exc:
+
+        logger.error(
+            "❌ MongoDB update error: %s",
+            exc,
+        )
+
+    finally:
+
+        invalidate_channel_config_cache(
+            channel_id
+        )
+
+
+def get_selected_channel(
+    user_id,
+):
+    try:
+        user = users_col.find_one(
+            {
+                "_id": str(user_id)
+            }
+        )
+
+        if not user:
+            return None
+
+        return user.get(
+            "selected_channel"
+        )
+
+    except Exception as exc:
+
+        logger.error(
+            "❌ User settings error: %s",
+            exc,
+        )
+
+        return None
+
+
+def set_selected_channel(
+    user_id,
+    channel_id,
+):
+    try:
+        users_col.update_one(
+            {
+                "_id": str(user_id)
+            },
+            {
+                "$set": {
+                    "selected_channel": channel_id
+                }
+            },
+            upsert=True,
+        )
+
+        return True
+
+    except Exception as exc:
+
+        logger.error(
+            "❌ Selected channel update failed: %s",
+            exc,
+        )
+
+        return False
+
+
+def user_owns_channel(
+    user_id,
+    channel_id,
+):
+    try:
+
+        channel = channels_col.find_one(
+            {
+                "_id": str(channel_id),
+                "owner_user_id": user_id,
+                "active": True,
+            }
+        )
+
+        return channel is not None
+
+    except Exception as exc:
+
+        logger.error(
+            "❌ Ownership check failed: %s",
+            exc,
+        )
+
+        return False
+
+
+def get_user_channels(
+    user_id,
+):
+    try:
+
+        return list(
+            channels_col.find(
+                {
+                    "owner_user_id": user_id,
+                    "active": True,
+                }
+            )
+        )
+
+    except Exception as exc:
+
+        logger.error(
+            "❌ Getting user channels failed: %s",
+            exc,
+        )
+
+        return []
+
+
+# ============================================================
+# RULE HELPERS
+# ============================================================
+
+def rule_value(rule):
+    if isinstance(rule, dict):
+        return rule.get(
+            "new",
+            "",
+        )
+
+    return str(rule)
+
+
+def rule_owner(rule):
+    if isinstance(rule, dict):
+        return rule.get(
+            "added_by"
+        )
+
     return None
 
 
-def dangal_caption(show, e):
-    try:
-        when = datetime.strptime(e["startDate"], "%Y-%m-%d %H:%M:%S").strftime("%d %B %Y")
-    except Exception:
-        when = datetime.now(IST).strftime("%d %B %Y")
-    link = f"{DANGAL_SITE}/{e['permalink']}"
-    lines = [
-        "#NewEpisode #DMT #DANGALPLAY #Notification",
-        "",
-        f"<b>Show Name: {html.escape(show['name'], quote=False)}</b>",
-    ]
-    m = re.search(r"EP\s*#?\s*(\d+)", e.get("title", ""), re.I)
-    if m:
-        lines.append(f"<b>Episode Number: {m.group(1)}</b>")
-    lines += [
-        f"<b>Episode Title: {html.escape(e.get('title', ''), quote=False)}</b>",
-        f"<b>Release Date: {when}</b>",
-        "<b>Language: Hindi</b>",
-        "",
-        "<b>Show Link:</b>",
-        f"<code>{html.escape(link, quote=False)}</code>",
-    ]
-    return "\n".join(lines)
+# ============================================================
+# LINK GUARD
+# ============================================================
+#
+# Telegram auto-detects raw URLs / bare domains (example.com,
+# www.site.com, https://...) inside plain text and turns them
+# into live, blue, clickable links -- even when the whole
+# message is otherwise wrapped in <b>.
+#
+# Link Guard defuses that auto-detection by slipping a
+# zero-width space (invisible, U+200B) into the pattern
+# Telegram's parser looks for. The text still reads exactly
+# the same to a human, it just stops qualifying as a link, so
+# it stays plain bold text instead of turning blue.
+# ============================================================
+
+ZERO_WIDTH_SPACE = "\u200b"
+
+_LINK_TLDS = (
+    "com|net|org|in|co|io|me|link|xyz|info|live|pro|club|"
+    "site|online|shop|store|app|dev|gg|tv|cc|ai|top|vip|"
+    "biz|ws|us|uk|to|fun|icu|click|world|life"
+)
+
+LINK_GUARD_PATTERN = re.compile(
+    r"(?P<scheme>https?://\S+)"
+    r"|(?P<www>www\.\S+)"
+    r"|(?P<bare>\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*"
+    r"\.(?:" + _LINK_TLDS + r")(?:/\S*)?\b)",
+    re.IGNORECASE,
+)
 
 
-# =================================================================
-# STATE
-# =================================================================
-def load_state():
+def _defuse_link_token(match):
+    token = match.group(0)
+
+    # Break the scheme ("https://" -> "https" + ZWS + "://")
+    token = re.sub(
+        r"(https?)(://)",
+        r"\1" + ZERO_WIDTH_SPACE + r"\2",
+        token,
+        flags=re.IGNORECASE,
+    )
+
+    # Break "www."
+    token = re.sub(
+        r"(www)(\.)",
+        r"\1" + ZERO_WIDTH_SPACE + r"\2",
+        token,
+        flags=re.IGNORECASE,
+    )
+
+    # Break every remaining dot in the domain/path so it no
+    # longer matches Telegram's own link-detection pattern.
+    token = token.replace(
+        ".",
+        ZERO_WIDTH_SPACE + ".",
+    )
+
+    # Collapse any doubled-up zero-width spaces created above.
+    token = token.replace(
+        ZERO_WIDTH_SPACE + ZERO_WIDTH_SPACE,
+        ZERO_WIDTH_SPACE,
+    )
+
+    return token
+
+
+def apply_link_guard(text):
+    """
+    Defuses any URL/bare-domain left in `text` so Telegram
+    renders it as plain bold text instead of a blue link.
+    Visually invisible to the reader.
+    """
+
+    if not text:
+        return text
+
+    return LINK_GUARD_PATTERN.sub(
+        _defuse_link_token,
+        text,
+    )
+
+
+# ============================================================
+# CAPTION TRANSFORM
+# ============================================================
+
+def transform_caption(
+    text,
+    config,
+):
+    """
+    Returns:
+
+    final_plain_text
+    final_html
+    """
+
+    replacement_rules = config.get(
+        "replacement_rules",
+        {},
+    )
+
+    custom_header = config.get(
+        "custom_header",
+        "",
+    ).strip()
+
+    custom_footer = config.get(
+        "custom_footer",
+        "",
+    ).strip()
+
+    final_text = text
+
+    # --------------------------------------------------------
+    # Remove unwanted t.me links
+    # --------------------------------------------------------
+
+    final_text = re.sub(
+        r"(https?://)?t\.me/"
+        r"(?!DG_Contents|dghelps_bot)"
+        r"[a-zA-Z0-9_]+",
+        "",
+        final_text,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------------
+    # Remove unwanted @mentions
+    # --------------------------------------------------------
+
+    final_text = re.sub(
+        r"@(?!DG_Contents|dghelps_bot)"
+        r"[a-zA-Z0-9_]+",
+        "",
+        final_text,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------------
+    # Replacement rules
+    # --------------------------------------------------------
+
+    for old_text, rule in replacement_rules.items():
+
+        new_text = rule_value(
+            rule
+        )
+
+        if not old_text:
+            continue
+
+        final_text = re.sub(
+            re.escape(old_text),
+            lambda _m,
+            replacement=new_text: replacement,
+            final_text,
+            flags=re.IGNORECASE,
+        )
+
+    # --------------------------------------------------------
+    # Clean spaces
+    # --------------------------------------------------------
+
+    final_text = re.sub(
+        r"[ \t]+",
+        " ",
+        final_text,
+    )
+
+    final_text = re.sub(
+        r"\n[ \t]+",
+        "\n",
+        final_text,
+    )
+
+    final_text = final_text.strip()
+
+    # --------------------------------------------------------
+    # Link Guard (defuse remaining URLs/domains -> plain bold)
+    # --------------------------------------------------------
+
+    if config.get(
+        "link_guard",
+        True,
+    ):
+
+        final_text = apply_link_guard(
+            final_text
+        )
+
+    # --------------------------------------------------------
+    # Header / Body / Footer
+    # --------------------------------------------------------
+
+    parts = []
+
+    if custom_header:
+        parts.append(
+            custom_header
+        )
+
+    if final_text:
+        parts.append(
+            final_text
+        )
+
+    if custom_footer:
+        parts.append(
+            custom_footer
+        )
+
+    final_plain = "\n\n".join(
+        parts
+    ).strip()
+
+    # --------------------------------------------------------
+    # HTML-safe output
+    # --------------------------------------------------------
+
+    final_html = html.escape(
+        final_plain
+    )
+
+    final_html = (
+        f"<b>{final_html}</b>"
+    )
+
+    return (
+        final_plain,
+        final_html,
+    )
+
+
+# ============================================================
+# SAFE TELEGRAM EDIT
+# ============================================================
+
+async def safe_edit(
+    bot,
+    *,
+    channel_id,
+    message_id,
+    content,
+    is_caption,
+):
+    """
+    Performs ONE edit.
+
+    Important:
+    RetryAfter is passed to worker.
+    MessageNotModified is considered successful.
+    """
+
+    for attempt in range(
+        1,
+        MAX_EDIT_RETRIES + 1,
+    ):
+
+        try:
+
+            if is_caption:
+
+                return await bot.edit_message_caption(
+                    chat_id=channel_id,
+                    message_id=message_id,
+                    caption=content,
+                    parse_mode="HTML",
+                )
+
+            return await bot.edit_message_text(
+                chat_id=channel_id,
+                message_id=message_id,
+                text=content,
+                parse_mode="HTML",
+            )
+
+        except RetryAfter:
+            raise
+
+        except BadRequest as exc:
+
+            error_text = str(
+                exc
+            ).lower()
+
+            if (
+                "message is not modified"
+                in error_text
+            ):
+                logger.info(
+                    "⏭️ Message already has requested content | %s/%s",
+                    channel_id,
+                    message_id,
+                )
+
+                return None
+
+            if (
+                "message to edit not found"
+                in error_text
+                or "message can't be edited"
+                in error_text
+            ):
+                raise
+
+            raise
+
+        except (
+            TimedOut,
+            NetworkError,
+        ) as exc:
+
+            if attempt >= MAX_EDIT_RETRIES:
+                raise
+
+            wait_time = min(
+                1.0 * (
+                    2 ** (
+                        attempt - 1
+                    )
+                ),
+                8.0,
+            )
+
+            logger.warning(
+                "🌐 Temporary network error; "
+                "retrying in %.1fs (%d/%d): %s",
+                wait_time,
+                attempt,
+                MAX_EDIT_RETRIES,
+                exc,
+            )
+
+            await asyncio.sleep(
+                wait_time
+            )
+
+    return None
+
+
+# ============================================================
+# RUN EDIT JOB
+# ============================================================
+
+async def run_edit_job(
+    job,
+):
+    bot = job["bot"]
+
+    channel_id = job[
+        "channel_id"
+    ]
+
+    message_id = job[
+        "message_id"
+    ]
+
+    content = job[
+        "content"
+    ]
+
+    is_caption = job[
+        "is_caption"
+    ]
+
+    final_plain = job[
+        "final_plain"
+    ]
+
+    started = time.monotonic()
+
     try:
-        with open(STATE_FILE) as f:
-            state = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        state = {}
-    if "last_episode" in state:
-        tm = str(SHOWS[0]["id"])
-        state.setdefault("shows", {})[tm] = {
-            "last_episode": state.pop("last_episode"),
-            "last_content_id": state.pop("last_content_id", None),
+
+        await safe_edit(
+            bot,
+            channel_id=channel_id,
+            message_id=message_id,
+            content=content,
+            is_caption=is_caption,
+        )
+
+        elapsed = (
+            time.monotonic()
+            - started
+        )
+
+        mark_recent_applied(
+            channel_id,
+            message_id,
+            final_plain,
+        )
+
+        logger.info(
+            "✅ EDITED | channel=%s message=%s time=%.2fs",
+            channel_id,
+            message_id,
+            elapsed,
+        )
+
+        return (
+            "ok",
+            job,
+            None,
+        )
+
+    except RetryAfter as exc:
+
+        retry_after = max(
+            1.0,
+            float(
+                exc.retry_after
+            ),
+        )
+
+        logger.warning(
+            "⏳ Telegram 429 | "
+            "channel=%s message=%s wait=%.1fs",
+            channel_id,
+            message_id,
+            retry_after,
+        )
+
+        return (
+            "rate_limit",
+            job,
+            retry_after,
+        )
+
+    except BadRequest as exc:
+
+        error_text = str(
+            exc
+        ).lower()
+
+        if (
+            "message is not modified"
+            in error_text
+        ):
+            mark_recent_applied(
+                channel_id,
+                message_id,
+                final_plain,
+            )
+
+            return (
+                "ok",
+                job,
+                None,
+            )
+
+        logger.error(
+            "❌ Telegram BadRequest | "
+            "channel=%s message=%s | %s",
+            channel_id,
+            message_id,
+            exc,
+        )
+
+        return (
+            "failed",
+            job,
+            None,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "❌ Edit failed | "
+            "channel=%s message=%s | %s",
+            channel_id,
+            message_id,
+            exc,
+        )
+
+        return (
+            "failed",
+            job,
+            None,
+        )
+
+
+# ============================================================
+# QUEUE
+# ============================================================
+
+async def enqueue_caption_job(
+    job,
+):
+    """
+    Same message ke multiple updates ko merge karta hai.
+
+    Example:
+
+    message 100
+    old -> new1
+
+    then:
+
+    message 100
+    old -> new2
+
+    Queue mein sirf newest job rahegi.
+    """
+
+    key = (
+        job["channel_id"],
+        job["message_id"],
+    )
+
+    if key in _pending_jobs:
+
+        _pending_jobs[key] = job
+
+        logger.info(
+            "♻️ Replaced pending job | "
+            "channel=%s message=%s",
+            job["channel_id"],
+            job["message_id"],
+        )
+
+        return
+
+    _pending_jobs[key] = job
+
+    await _caption_queue.put(
+        key
+    )
+
+
+# ============================================================
+# CAPTION WORKER
+# ============================================================
+
+async def caption_batch_worker():
+    """
+    Stable sequential worker.
+
+    ONE edit at a time.
+
+    No asyncio.gather().
+
+    This avoids the previous 10-request burst pattern.
+    """
+
+    logger.info(
+        "🚀 Stable caption worker online | "
+        "adaptive interval %.2fs-%.2fs",
+        MIN_EDIT_INTERVAL,
+        MAX_EDIT_INTERVAL,
+    )
+
+    while True:
+
+        try:
+
+            key = await _caption_queue.get()
+
+            job = _pending_jobs.pop(
+                key,
+                None,
+            )
+
+            if job is None:
+
+                _caption_queue.task_done()
+
+                continue
+
+            logger.info(
+                "📤 Processing edit | "
+                "channel=%s message=%s queue=%d",
+                job["channel_id"],
+                job["message_id"],
+                _caption_queue.qsize(),
+            )
+
+            result = await run_edit_job(
+                job
+            )
+
+            status_value = result[0]
+
+            if status_value == "rate_limit":
+
+                retry_after = result[2]
+
+                slow_down_edit_interval(
+                    retry_after
+                )
+
+                wait_time = (
+                    retry_after
+                    + 1.5
+                )
+
+                logger.warning(
+                    "🛑 RATE LIMIT | waiting %.1fs | "
+                    "new interval=%.2fs",
+                    wait_time,
+                    get_current_edit_interval(),
+                )
+
+                await send_important_log(
+                    job["bot"],
+                    "TELEGRAM RATE LIMIT",
+                    (
+                        f"Channel: {job['channel_id']}\n"
+                        f"Message: {job['message_id']}\n"
+                        f"Waiting: {wait_time:.1f}s"
+                    ),
+                    "WARNING",
+                )
+
+                await asyncio.sleep(
+                    wait_time
+                )
+
+                # Requeue the same job
+                #
+                # If another newer update exists for this
+                # message, don't overwrite it.
+
+                key = (
+                    job["channel_id"],
+                    job["message_id"],
+                )
+
+                if key not in _pending_jobs:
+
+                    _pending_jobs[key] = job
+
+                    await _caption_queue.put(
+                        key
+                    )
+
+            elif status_value == "ok":
+
+                speed_up_edit_interval()
+
+            # ------------------------------------------------
+            # Adaptive interval
+            # ------------------------------------------------
+
+            await asyncio.sleep(
+                get_current_edit_interval()
+            )
+
+            _caption_queue.task_done()
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+
+            logger.exception(
+                "❌ Caption worker error: %s",
+                exc,
+            )
+
+            await asyncio.sleep(
+                3
+            )
+
+
+# ============================================================
+# START WORKER
+# ============================================================
+
+async def start_caption_worker(
+    application,
+):
+    global _caption_worker_task
+
+    if _caption_worker_task is None:
+
+        _caption_worker_task = (
+            asyncio.create_task(
+                caption_batch_worker()
+            )
+        )
+
+    logger.info(
+        "🚀 Caption worker started."
+    )
+
+    await send_important_log(
+        application.bot,
+        "BOT ONLINE",
+        (
+            f"Premium Auto Caption Engine v{ENGINE_VERSION} started.\n"
+            f"Edit interval: {MIN_EDIT_INTERVAL:.2f}s-{MAX_EDIT_INTERVAL:.2f}s (adaptive)\n"
+            "Mode: Stable Sequential Queue"
+        ),
+        "START",
+    )
+
+
+# ============================================================
+# STOP WORKER
+# ============================================================
+
+async def stop_caption_worker(
+    application,
+):
+    global _caption_worker_task
+
+    await send_important_log(
+        application.bot,
+        "BOT OFFLINE",
+        "Caption engine is shutting down.",
+        "STOP",
+    )
+
+    if (
+        _caption_worker_task
+        is not None
+    ):
+
+        _caption_worker_task.cancel()
+
+        try:
+            await _caption_worker_task
+
+        except asyncio.CancelledError:
+            pass
+
+        _caption_worker_task = None
+
+
+# ============================================================
+# CHANNEL POST PROCESSOR
+# ============================================================
+
+async def edit_channel_caption(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    msg = (
+        update.channel_post
+        or update.edited_channel_post
+    )
+
+    if not msg:
+        return
+
+    channel_id = msg.chat_id
+
+    message_id = msg.message_id
+
+    logger.info(
+        "📨 RECEIVED | channel=%s message=%s",
+        channel_id,
+        message_id,
+    )
+
+    try:
+
+        config = (
+            await get_cached_channel_config_async(
+                channel_id
+            )
+        )
+
+        if not config:
+            return
+
+        if not config.get(
+            "active",
+            True,
+        ):
+            logger.info(
+                "⏭️ Inactive channel: %s",
+                channel_id,
+            )
+            return
+
+        # ----------------------------------------------------
+        # Determine original text/caption
+        # ----------------------------------------------------
+
+        text_to_check = (
+            msg.caption
+            if msg.caption is not None
+            else msg.text
+        )
+
+        if not text_to_check:
+
+            logger.info(
+                "⏭️ No caption/text | %s/%s",
+                channel_id,
+                message_id,
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Transform
+        # ----------------------------------------------------
+
+        (
+            final_plain,
+            final_html,
+        ) = transform_caption(
+            text_to_check,
+            config,
+        )
+
+        # ----------------------------------------------------
+        # LOOP PROTECTION
+        # ----------------------------------------------------
+
+        if (
+            text_to_check.strip()
+            == final_plain
+        ):
+
+            logger.info(
+                "⏭️ Already correct | %s/%s",
+                channel_id,
+                message_id,
+            )
+
+            mark_recent_applied(
+                channel_id,
+                message_id,
+                final_plain,
+            )
+
+            return
+
+        recent = get_recent_applied(
+            channel_id,
+            message_id,
+        )
+
+        if recent == final_plain:
+
+            logger.info(
+                "⏭️ Already applied recently | %s/%s",
+                channel_id,
+                message_id,
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Queue
+        # ----------------------------------------------------
+
+        is_caption = (
+            msg.caption is not None
+        )
+
+        job = {
+            "bot": context.bot,
+
+            "channel_id": channel_id,
+
+            "message_id": message_id,
+
+            "content": final_html,
+
+            "final_plain": final_plain,
+
+            "is_caption": is_caption,
         }
-    state.setdefault("shows", {})
-    state.setdefault("zee5", {})
-    state.setdefault("dangal", {})
-    state.setdefault("dangal_series", {})
-    state.setdefault("timed", {})
-    state.setdefault("hotstar", {})
-    state.setdefault("timed_ep", {})
-    return state
+
+        await enqueue_caption_job(
+            job
+        )
+
+        logger.info(
+            "📥 QUEUED | %s/%s | queue=%d",
+            channel_id,
+            message_id,
+            _caption_queue.qsize(),
+        )
+
+    except asyncio.QueueFull:
+
+        logger.error(
+            "❌ Caption queue full. "
+            "Dropping job %s/%s",
+            channel_id,
+            message_id,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "❌ Caption processing failed | "
+            "%s/%s | %s",
+            channel_id,
+            message_id,
+            exc,
+        )
 
 
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+# ============================================================
+# CHANNEL CONNECTION
+# ============================================================
+
+async def handle_bot_channel_status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    chat_member_update = (
+        update.my_chat_member
+    )
+
+    if not chat_member_update:
+        return
+
+    chat = (
+        chat_member_update.chat
+    )
+
+    if chat.type != ChatType.CHANNEL:
+        return
+
+    new_status = (
+        chat_member_update
+        .new_chat_member.status
+    )
+
+    actor_user_id = (
+        chat_member_update
+        .from_user.id
+    )
+
+    channel_id = chat.id
+
+    logger.info(
+        "📡 Channel membership | "
+        "channel=%s new=%s by=%s",
+        channel_id,
+        new_status,
+        actor_user_id,
+    )
+
+    # ========================================================
+    # BOT BECAME ADMIN
+    # ========================================================
+
+    if (
+        new_status
+        == ChatMemberStatus.ADMINISTRATOR
+    ):
+
+        try:
+
+            me = await context.bot.get_me()
+
+            bot_member = (
+                await context.bot.get_chat_member(
+                    chat_id=channel_id,
+                    user_id=me.id,
+                )
+            )
+
+            if (
+                bot_member.status
+                != ChatMemberStatus.ADMINISTRATOR
+            ):
+
+                logger.warning(
+                    "⚠️ Bot is not administrator in %s",
+                    channel_id,
+                )
+
+                return
+
+            title = (
+                chat.title
+                or ""
+            )
+
+            username = (
+                chat.username
+                or ""
+            )
+
+            existing = (
+                channels_col.find_one(
+                    {
+                        "_id": str(channel_id)
+                    }
+                )
+            )
+
+            if existing:
+
+                channels_col.update_one(
+                    {
+                        "_id": str(channel_id)
+                    },
+                    {
+                        "$set": {
+                            "active": False,
+                            "title": title,
+                            "username": username,
+                            "owner_user_id": actor_user_id,
+                        }
+                    },
+                )
+
+            else:
+
+                config = (
+                    default_channel_config(
+                        channel_id
+                    )
+                )
+
+                config[
+                    "owner_user_id"
+                ] = actor_user_id
+
+                config[
+                    "active"
+                ] = False
+
+                config[
+                    "title"
+                ] = title
+
+                config[
+                    "username"
+                ] = username
+
+                channels_col.insert_one(
+                    config
+                )
+
+            invalidate_channel_config_cache(
+                channel_id
+            )
+
+            set_selected_channel(
+                actor_user_id,
+                channel_id,
+            )
+
+            await context.bot.send_message(
+                chat_id=actor_user_id,
+                text=(
+                    "🎉 <b>CHANNEL RECEIVED</b>\n\n"
+
+                    f"📢 <b>Channel:</b> "
+                    f"{html.escape(title or str(channel_id))}\n"
+
+                    f"🆔 <b>Channel ID:</b> "
+                    f"<code>{channel_id}</code>\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━\n\n"
+
+                    "🔗 <b>Next Step</b>\n\n"
+
+                    f"<code>/connect {channel_id}</code>\n\n"
+
+                    "After connecting, open the premium "
+                    "dashboard with:\n\n"
+
+                    "<code>/panel</code>"
+                ),
+                parse_mode="HTML",
+            )
+
+            await send_important_log(
+                context.bot,
+                "CHANNEL RECEIVED",
+                (
+                    f"Channel: {title or channel_id}\n"
+                    f"Channel ID: {channel_id}\n"
+                    f"Owner ID: {actor_user_id}"
+                ),
+                "CHANNEL",
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "❌ Channel connection failed: %s",
+                exc,
+            )
+
+    # ========================================================
+    # BOT LEFT / BANNED
+    # ========================================================
+
+    elif new_status in (
+        ChatMemberStatus.LEFT,
+        ChatMemberStatus.BANNED,
+    ):
+
+        try:
+
+            channels_col.update_one(
+                {
+                    "_id": str(channel_id)
+                },
+                {
+                    "$set": {
+                        "active": False
+                    }
+                },
+            )
+
+            invalidate_channel_config_cache(
+                channel_id
+            )
+
+            await send_important_log(
+                context.bot,
+                "CHANNEL DISCONNECTED",
+                f"Channel ID: {channel_id}",
+                "STOP",
+            )
+
+        except Exception as exc:
+
+            logger.error(
+                "❌ Channel disconnect error: %s",
+                exc,
+            )
 
 
-# =================================================================
-# PROCESS
-# =================================================================
-def process_show(show, state, now):
-    eps = fetch_episodes(show)
-    if not eps:
-        print("  Koi episode nahi mila (naam/ID check karo)")
-        return False
-    live = [m for m in eps if avail_time(m) <= now]
-    print(f"  Latest on API: {eps[0]['episodeNumber']} | Live abhi: "
-          f"{[m['episodeNumber'] for m in live][:3]}")
+# ============================================================
+# PREMIUM KEYBOARD
+# ============================================================
 
-    rec = state["shows"].get(str(show["id"]), {})
-    last = rec.get("last_episode")
-    if last is None:
-        pending = live[:1]
+def get_start_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ Add Me to Your Channel",
+                    url=(
+                        f"https://t.me/{BOT_USERNAME}"
+                        "?startchannel=true"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📢 Channel",
+                    url="https://t.me/dg_contents",
+                ),
+
+                InlineKeyboardButton(
+                    "👥 Support",
+                    url="https://t.me/dghelps_bot",
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🎛️ Open Dashboard",
+                    callback_data="panel",
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "❓ Help",
+                    callback_data="help",
+                )
+            ],
+        ]
+    )
+
+
+def get_panel_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📢 My Channels",
+                    callback_data="channels",
+                ),
+
+                InlineKeyboardButton(
+                    "📊 Status",
+                    callback_data="status",
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔄 Rules",
+                    callback_data="rules",
+                ),
+
+                InlineKeyboardButton(
+                    "🎨 Header/Footer",
+                    callback_data="branding",
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "❓ Help",
+                    callback_data="help",
+                ),
+
+                InlineKeyboardButton(
+                    "🔙 Home",
+                    callback_data="home",
+                ),
+            ],
+        ]
+    )
+
+
+# ============================================================
+# PREMIUM PANEL TEXT
+# ============================================================
+
+def get_panel_text(
+    user_id,
+):
+    selected = get_selected_channel(
+        user_id
+    )
+
+    channels = get_user_channels(
+        user_id
+    )
+
+    if selected:
+        selected_text = (
+            f"<code>{selected}</code>"
+        )
     else:
-        pending = sorted((m for m in live if int(m["episodeNumber"]) > last),
-                         key=lambda m: int(m["episodeNumber"]))
-    if not pending:
-        print("  Naya kuch nahi")
-        return True
+        selected_text = (
+            "<i>None selected</i>"
+        )
 
-    for m in pending:
-        if send_telegram(show, m):
-            state["shows"][str(show["id"])] = {
-                "last_episode": int(m["episodeNumber"]),
-                "last_content_id": m["contentId"],
+    return (
+        "⚡ <b>AUTO CAPTION ENGINE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "🎛️ <b>PREMIUM CONTROL PANEL</b>\n\n"
+
+        f"📢 <b>Connected Channels:</b> "
+        f"<code>{len(channels)}</code>\n"
+
+        f"🎯 <b>Selected Channel:</b> "
+        f"{selected_text}\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "🚀 <b>Engine</b>\n"
+        "• Automatic caption editing\n"
+        "• Smart replacement rules\n"
+        "• Link & mention cleanup\n"
+        "• 🔗 Link Guard (no more blue links)\n"
+        "• Custom branding\n"
+        "• Channel-isolated settings\n"
+        "• Stable anti-429 queue\n\n"
+
+        f"<i>v{ENGINE_VERSION} Premium • Uptime {get_uptime_text()}</i>\n\n"
+
+        "👇 <b>Choose an option</b>"
+    )
+
+
+# ============================================================
+# /START
+# ============================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user = update.effective_user
+
+    if not user:
+        return
+
+    await log_new_user(
+        context.bot,
+        user,
+    )
+
+    name = (
+        user.first_name
+        or "User"
+    )
+
+    if is_admin(user.id):
+
+        welcome_text = (
+            f"⚡ <b>Welcome, "
+            f"{html.escape(name)}!</b>\n\n"
+
+            "🚀 <b>Auto Caption Engine</b>\n"
+            "<i>Premium Edition</i>\n\n"
+
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "🤖 Automatically manage your "
+            "Telegram channel captions.\n\n"
+
+            "✨ <b>Features</b>\n"
+            "• Smart word replacement\n"
+            "• Unwanted link cleanup\n"
+            "• Mention cleanup\n"
+            "• 🔗 Link Guard — no more blue links\n"
+            "• Custom header/footer\n"
+            "• Multi-channel support\n"
+            "• Stable anti-rate-limit engine\n\n"
+
+            "🎯 <b>Quick Start</b>\n\n"
+            "1️⃣ Add me to your channel\n"
+            "2️⃣ Give Administrator permission\n"
+            "3️⃣ Connect the channel\n"
+            "4️⃣ Open Dashboard\n"
+            "5️⃣ Configure your rules\n\n"
+
+            "👇 <b>Use the buttons below.</b>"
+        )
+
+    else:
+
+        welcome_text = (
+            f"👋 <b>Hello, "
+            f"{html.escape(name)}!</b>\n\n"
+
+            "⚡ <b>Auto Caption Engine</b>\n"
+            "<i>Premium Edition</i>\n\n"
+
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "🤖 Your automatic Telegram "
+            "caption editor.\n\n"
+
+            "✨ <b>What it can do</b>\n"
+            "• 🔄 Replace unwanted words\n"
+            "• 🧹 Clean unwanted links\n"
+            "• 👤 Clean unwanted mentions\n"
+            "• 🔗 Turn stray links into plain bold text\n"
+            "• 🎨 Add custom branding\n"
+            "• 📢 Manage multiple channels\n"
+            "• 🛡️ Stable processing system\n\n"
+
+            "🚀 <b>Getting Started</b>\n\n"
+            "Add the bot to your channel as "
+            "Administrator, then follow the "
+            "instructions sent by the bot."
+        )
+
+    await update.message.reply_text(
+        text=welcome_text,
+        parse_mode="HTML",
+        reply_markup=get_start_keyboard(),
+    )
+
+
+# ============================================================
+# /PANEL
+# ============================================================
+
+async def panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    await update.message.reply_text(
+        text=get_panel_text(
+            user_id
+        ),
+        parse_mode="HTML",
+        reply_markup=get_panel_keyboard(),
+    )
+
+
+# ============================================================
+# /CONNECT
+# ============================================================
+
+async def connect_channel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "📢 <b>Connect Channel</b>\n\n"
+            "Use:\n"
+            "<code>/connect CHANNEL_ID</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    try:
+
+        channel_id = int(
+            context.args[0].strip()
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Invalid Channel ID.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    try:
+
+        channel = channels_col.find_one(
+            {
+                "_id": str(channel_id)
             }
-            save_state(state)
+        )
+
+        if not channel:
+
+            await update.message.reply_text(
+                "❌ <b>Channel Not Found</b>\n\n"
+                "Pehle bot ko channel mein "
+                "Administrator banao.",
+                parse_mode="HTML",
+            )
+
+            return
+
+        if (
+            channel.get(
+                "owner_user_id"
+            )
+            != user_id
+        ):
+
+            await update.message.reply_text(
+                "⛔ <b>Access Denied</b>\n\n"
+                "Ye channel aapke account se "
+                "linked nahi hai.",
+                parse_mode="HTML",
+            )
+
+            return
+
+        me = await context.bot.get_me()
+
+        bot_member = (
+            await context.bot.get_chat_member(
+                chat_id=channel_id,
+                user_id=me.id,
+            )
+        )
+
+        if (
+            bot_member.status
+            != ChatMemberStatus.ADMINISTRATOR
+        ):
+
+            await update.message.reply_text(
+                "❌ Bot ko channel mein "
+                "<b>Administrator</b> permission chahiye.",
+                parse_mode="HTML",
+            )
+
+            return
+
+        channels_col.update_one(
+            {
+                "_id": str(channel_id)
+            },
+            {
+                "$set": {
+                    "active": True
+                }
+            },
+        )
+
+        invalidate_channel_config_cache(
+            channel_id
+        )
+
+        set_selected_channel(
+            user_id,
+            channel_id,
+        )
+
+        title = channel.get(
+            "title",
+            "Channel",
+        )
+
+        await update.message.reply_text(
+            "✅ <b>CHANNEL CONNECTED</b>\n\n"
+
+            f"📢 <b>{html.escape(title)}</b>\n"
+            f"🆔 <code>{channel_id}</code>\n\n"
+
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "🚀 Caption processing is now "
+            "<b>ACTIVE</b>.\n\n"
+
+            "🎛️ Open your dashboard:\n"
+            "<code>/panel</code>",
+            parse_mode="HTML",
+        )
+
+        await send_important_log(
+            context.bot,
+            "CHANNEL ACTIVATED",
+            (
+                f"Channel: {title}\n"
+                f"Channel ID: {channel_id}\n"
+                f"Owner: {user_id}"
+            ),
+            "CHANNEL",
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "❌ Connect command failed: %s",
+            exc,
+        )
+
+        await update.message.reply_text(
+            "❌ <b>Connection Failed</b>\n\n"
+            "Channel ID aur bot permissions "
+            "check karo.",
+            parse_mode="HTML",
+        )
+
+
+# ============================================================
+# /CHANNELS
+# ============================================================
+
+async def channels_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    user_channels = get_user_channels(
+        user_id
+    )
+
+    if not user_channels:
+
+        await update.message.reply_text(
+            "📭 <b>No Connected Channels</b>\n\n"
+            "Pehle bot ko apne Telegram channel "
+            "mein Administrator ke roop mein add karo.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    selected = get_selected_channel(
+        user_id
+    )
+
+    message = (
+        "📢 <b>YOUR CHANNELS</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    keyboard = []
+
+    for channel in user_channels:
+
+        channel_id = channel.get(
+            "channel_id"
+        )
+
+        title = channel.get(
+            "title",
+            "Unknown Channel",
+        )
+
+        username = channel.get(
+            "username",
+            "",
+        )
+
+        if selected == channel_id:
+            mark = "🟢"
         else:
-            return False
-    return True
+            mark = "⚪"
+
+        username_text = (
+            f"@{username}"
+            if username
+            else "Private Channel"
+        )
+
+        message += (
+            f"{mark} <b>{html.escape(title)}</b>\n"
+            f"   🆔 <code>{channel_id}</code>\n"
+            f"   🔗 {html.escape(username_text)}\n\n"
+        )
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"🎯 Select {title[:25]}",
+                    callback_data=(
+                        f"select:{channel_id}"
+                    ),
+                )
+            ]
+        )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "🔙 Dashboard",
+                callback_data="panel",
+            )
+        ]
+    )
+
+    await update.message.reply_text(
+        message,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        ),
+    )
 
 
-def process_zee5_show(show, state):
-    eps = fetch_zee5_episodes(show)
-    if not eps:
-        print("  Koi episode nahi mila (page ya JSON-LD check karo)")
-        return False
-    print(f"  Page pe latest: {eps[0]['title']} | total list: {len(eps)}")
+# ============================================================
+# /USECHANNEL
+# ============================================================
 
-    rec = state["zee5"].get(show["id"])
-    if rec is None:
-        seen = [e["id"] for e in eps[1:]]
-        pending = eps[:1]
+async def use_channel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "🎯 <b>Select Channel</b>\n\n"
+            "Use:\n"
+            "<code>/usechannel CHANNEL_ID</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    try:
+
+        channel_id = int(
+            context.args[0].strip()
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Invalid Channel ID.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    if not user_owns_channel(
+        user_id,
+        channel_id,
+    ):
+
+        await update.message.reply_text(
+            "⛔ <b>Access Denied</b>\n\n"
+            "Ye channel aapke account se "
+            "connected nahi hai.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    set_selected_channel(
+        user_id,
+        channel_id,
+    )
+
+    config = get_channel_config(
+        channel_id
+    )
+
+    title = config.get(
+        "title",
+        "Channel",
+    )
+
+    await update.message.reply_text(
+        "✅ <b>CHANNEL SELECTED</b>\n\n"
+
+        f"📢 <b>{html.escape(title)}</b>\n"
+        f"🆔 <code>{channel_id}</code>\n\n"
+
+        "Ab dashboard ke settings isi "
+        "channel par apply hongi.",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# GET COMMAND CHANNEL
+# ============================================================
+
+async def get_command_channel(
+    update,
+):
+    user_id = update.effective_user.id
+
+    channel_id = get_selected_channel(
+        user_id
+    )
+
+    if not channel_id:
+
+        await update.message.reply_text(
+            "⚠️ <b>No Channel Selected</b>\n\n"
+            "Open:\n"
+            "<code>/channels</code>",
+            parse_mode="HTML",
+        )
+
+        return None
+
+    if not user_owns_channel(
+        user_id,
+        channel_id,
+    ):
+
+        await update.message.reply_text(
+            "⛔ <b>Selected Channel Invalid</b>\n\n"
+            "Please select your channel again.",
+            parse_mode="HTML",
+        )
+
+        return None
+
+    return channel_id
+
+
+# ============================================================
+# /ADDRULE
+# ============================================================
+
+async def add_rule(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    raw_args = " ".join(
+        context.args
+    )
+
+    if " -> " not in raw_args:
+
+        await update.message.reply_text(
+            "🔄 <b>ADD REPLACEMENT RULE</b>\n\n"
+            "Format:\n"
+            "<code>/addrule old -> new</code>\n\n"
+            "Example:\n"
+            "<code>/addrule MovieHub -> DG_Contents</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    old_part, new_part = raw_args.split(
+        " -> ",
+        1,
+    )
+
+    old_part = old_part.strip()
+
+    new_part = new_part.strip()
+
+    if not old_part:
+
+        await update.message.reply_text(
+            "❌ Old text empty nahi ho sakta.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    if not new_part:
+
+        await update.message.reply_text(
+            "❌ New text empty nahi ho sakta.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    config = get_channel_config(
+        channel_id
+    )
+
+    rules = config.get(
+        "replacement_rules",
+        {},
+    )
+
+    rules[old_part] = {
+        "new": new_part,
+        "added_by": user_id,
+    }
+
+    update_channel_config(
+        channel_id,
+        "replacement_rules",
+        rules,
+    )
+
+    await update.message.reply_text(
+        "✅ <b>RULE ADDED</b>\n\n"
+
+        f"🔎 <code>{html.escape(old_part)}</code>"
+        " ➡️ "
+        f"<code>{html.escape(new_part)}</code>\n\n"
+
+        "🚀 Rule is now active.",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# /DELRULE
+# ============================================================
+
+async def del_rule(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    old_text = " ".join(
+        context.args
+    ).strip()
+
+    if not old_text:
+
+        await update.message.reply_text(
+            "🗑️ <b>Delete Rule</b>\n\n"
+            "<code>/delrule old_text</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    config = get_channel_config(
+        channel_id
+    )
+
+    rules = config.get(
+        "replacement_rules",
+        {},
+    )
+
+    if old_text not in rules:
+
+        await update.message.reply_text(
+            "❌ <b>Rule Not Found</b>\n\n"
+            "Exact old text use karo.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    owner = rule_owner(
+        rules[old_text]
+    )
+
+    if (
+        is_admin(user_id)
+        or owner == user_id
+    ):
+
+        del rules[old_text]
+
+        update_channel_config(
+            channel_id,
+            "replacement_rules",
+            rules,
+        )
+
+        await update.message.reply_text(
+            "🗑️ <b>RULE DELETED</b>\n\n"
+            f"<code>{html.escape(old_text)}</code>",
+            parse_mode="HTML",
+        )
+
     else:
-        seen = list(rec.get("seen", []))
-        pending = [e for e in reversed(eps) if e["id"] not in seen]
 
-    if not pending:
-        print("  Naya kuch nahi")
-        return True
-
-    for e in pending:
-        if not e.get("number") or e.get("season") in (None, ""):
-            print("  (ZEE5 JSON-LD me season/episode number nahi mila, keys:", e.get("keys"), ")")
-        if send_tg(zee5_caption(show, e), zee5_poster(e)):
-            seen.append(e["id"])
-            state["zee5"][show["id"]] = {"seen": seen[-300:]}
-            save_state(state)
-        else:
-            return False
-    return True
+        await update.message.reply_text(
+            "⛔ <b>Access Denied</b>\n\n"
+            "Aap sirf apna rule delete "
+            "kar sakte ho.",
+            parse_mode="HTML",
+        )
 
 
-def process_dangal_show(show, state, token):
-    series_id = dangal_series_id(show, state, token)
-    eps = dangal_latest_episodes(series_id, token)
-    if not eps:
-        print(f"  Koi episode nahi mila (series_id {series_id})")
-        return False
-    show = {**show, "name": show.get("name") or eps[-1].get("seriesTitle") or "Dangal Play Show"}
-    print(f"  series_id {series_id} | Latest on API: {eps[-1]['title']} | released: {len(eps)}")
+# ============================================================
+# /SETHEADER
+# ============================================================
 
-    key = str(series_id)
-    rec = state["dangal"].get(key)
-    if rec is None:
-        pending = eps[-1:]          # pehli baar: sirf sabse naya episode
+async def set_header(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        await update.message.reply_text(
+            "⛔ <b>Access Denied</b>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    header_text = " ".join(
+        context.args
+    ).strip()
+
+    update_channel_config(
+        channel_id,
+        "custom_header",
+        header_text,
+    )
+
+    await update.message.reply_text(
+        "🎨 <b>HEADER UPDATED</b>\n\n"
+        f"<code>{html.escape(header_text) or 'EMPTY'}</code>",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# /SETFOOTER
+# ============================================================
+
+async def set_footer(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        await update.message.reply_text(
+            "⛔ <b>Access Denied</b>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    footer_text = " ".join(
+        context.args
+    ).strip()
+
+    update_channel_config(
+        channel_id,
+        "custom_footer",
+        footer_text,
+    )
+
+    await update.message.reply_text(
+        "🎨 <b>FOOTER UPDATED</b>\n\n"
+        f"<code>{html.escape(footer_text) or 'EMPTY'}</code>",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# /CLEAR
+# ============================================================
+
+async def clear_rules(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        await update.message.reply_text(
+            "⛔ <b>Access Denied</b>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    update_channel_config(
+        channel_id,
+        "replacement_rules",
+        {},
+    )
+
+    await update.message.reply_text(
+        "🧹 <b>RULES CLEARED</b>\n\n"
+        "Selected channel ke saare "
+        "replacement rules clear ho gaye.",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# /LINKGUARD
+# ============================================================
+
+async def link_guard_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    if not context.args:
+
+        config = get_channel_config(
+            channel_id
+        )
+
+        current = config.get(
+            "link_guard",
+            True,
+        )
+
+        await update.message.reply_text(
+            "🔗 <b>LINK GUARD</b>\n\n"
+
+            f"Status: {'🟢 ON' if current else '⚪ OFF'}\n\n"
+
+            "Jab ON hai, caption mein bache hue "
+            "URLs/domains blue link nahi banenge — "
+            "wo plain bold text ki tarah dikhenge.\n\n"
+
+            "Toggle karne ke liye:\n"
+            "<code>/linkguard on</code>\n"
+            "<code>/linkguard off</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    choice = context.args[0].strip().lower()
+
+    if choice not in (
+        "on",
+        "off",
+    ):
+
+        await update.message.reply_text(
+            "❌ Use <code>/linkguard on</code> "
+            "ya <code>/linkguard off</code>.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    enabled = choice == "on"
+
+    update_channel_config(
+        channel_id,
+        "link_guard",
+        enabled,
+    )
+
+    await update.message.reply_text(
+        "🔗 <b>LINK GUARD UPDATED</b>\n\n"
+        f"Status: {'🟢 ON' if enabled else '⚪ OFF'}",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# STATUS BUILDER
+# ============================================================
+
+def build_status_text(
+    channel_id,
+):
+    config = get_channel_config(
+        channel_id
+    )
+
+    rules = config.get(
+        "replacement_rules",
+        {},
+    )
+
+    title = config.get(
+        "title",
+        "Unknown",
+    )
+
+    username = config.get(
+        "username",
+        "",
+    )
+
+    active = config.get(
+        "active",
+        False,
+    )
+
+    status_text = (
+        "🟢 ACTIVE"
+        if active
+        else "🔴 INACTIVE"
+    )
+
+    message = (
+        "⚡ <b>AUTO CAPTION ENGINE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "📊 <b>CHANNEL STATUS</b>\n\n"
+
+        f"📢 <b>Channel:</b> "
+        f"{html.escape(title)}\n"
+
+        f"🆔 <b>ID:</b> "
+        f"<code>{channel_id}</code>\n"
+    )
+
+    if username:
+        message += (
+            f"🔗 <b>Username:</b> "
+            f"@{html.escape(username)}\n"
+        )
+
+    message += (
+        f"⚙️ <b>Status:</b> {status_text}\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"🔄 <b>Rules:</b> "
+        f"<code>{len(rules)}</code>\n"
+
+        f"📥 <b>Queue:</b> "
+        f"<code>{_caption_queue.qsize()}</code>\n"
+
+        f"⏱️ <b>Edit Interval:</b> "
+        f"<code>{get_current_edit_interval():.2f}s</code> "
+        f"<i>(adaptive, {MIN_EDIT_INTERVAL:.2f}-{MAX_EDIT_INTERVAL:.2f}s)</i>\n\n"
+
+        "🎨 <b>Branding</b>\n"
+
+        f"Header: "
+        f"{'🟢 ON' if config.get('custom_header') else '⚪ OFF'}\n"
+
+        f"Footer: "
+        f"{'🟢 ON' if config.get('custom_footer') else '⚪ OFF'}\n\n"
+
+        "🛡️ <b>Protection</b>\n"
+        "• Anti-loop: 🟢\n"
+        "• Duplicate merge: 🟢\n"
+        "• Rate-limit handling: 🟢\n"
+        "• Sequential queue: 🟢\n"
+
+        f"• Link Guard: "
+        f"{'🟢 ON' if config.get('link_guard', True) else '⚪ OFF'}\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"⚙️ <b>Engine:</b> v{ENGINE_VERSION} Premium\n"
+        f"⏳ <b>Uptime:</b> {get_uptime_text()}\n"
+    )
+
+    return message
+
+
+# ============================================================
+# /STATUS
+# ============================================================
+
+async def status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    channel_id = await get_command_channel(
+        update
+    )
+
+    if channel_id is None:
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔄 Rules",
+                    callback_data="rules",
+                ),
+                InlineKeyboardButton(
+                    "🎨 Branding",
+                    callback_data="branding",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔙 Dashboard",
+                    callback_data="panel",
+                )
+            ],
+        ]
+    )
+
+    await update.message.reply_text(
+        build_status_text(
+            channel_id
+        ),
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+# ============================================================
+# /DISCONNECT
+# ============================================================
+
+async def disconnect_channel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    user_id = update.effective_user.id
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "🔴 <b>Disconnect Channel</b>\n\n"
+            "<code>/disconnect CHANNEL_ID</code>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    try:
+
+        channel_id = int(
+            context.args[0]
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Invalid Channel ID.",
+            parse_mode="HTML",
+        )
+
+        return
+
+    if not is_admin(user_id):
+
+        if not user_owns_channel(
+            user_id,
+            channel_id,
+        ):
+
+            await update.message.reply_text(
+                "⛔ <b>Access Denied</b>",
+                parse_mode="HTML",
+            )
+
+            return
+
+    update_channel_config(
+        channel_id,
+        "active",
+        False,
+    )
+
+    if (
+        get_selected_channel(
+            user_id
+        )
+        == channel_id
+    ):
+
+        users_col.update_one(
+            {
+                "_id": str(user_id)
+            },
+            {
+                "$unset": {
+                    "selected_channel": ""
+                }
+            },
+        )
+
+    await update.message.reply_text(
+        "🔴 <b>CHANNEL DISCONNECTED</b>\n\n"
+        f"🆔 <code>{channel_id}</code>\n\n"
+        "Posts from this channel will "
+        "no longer be processed.",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
+# HELP
+# ============================================================
+
+def get_help_text():
+    return (
+        "❓ <b>AUTO CAPTION ENGINE</b>\n"
+        "<i>Premium Edition</i>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "🤖 <b>What does it do?</b>\n\n"
+
+        "Automatically processes captions "
+        "in your connected Telegram channels.\n\n"
+
+        "✨ <b>Features</b>\n\n"
+
+        "🔄 Word replacement\n"
+        "🧹 Link cleanup\n"
+        "👤 Mention cleanup\n"
+        "🔗 Link Guard (blue links → plain bold)\n"
+        "🎨 Custom header/footer\n"
+        "📢 Multiple channels\n"
+        "🛡️ Anti-loop protection\n"
+        "⏳ Stable rate-limit handling\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "📢 <b>CHANNEL</b>\n"
+        "<code>/channels</code>\n"
+        "<code>/usechannel CHANNEL_ID</code>\n\n"
+
+        "🔄 <b>RULE</b>\n"
+        "<code>/addrule old -> new</code>\n"
+        "<code>/delrule old</code>\n\n"
+
+        "🎨 <b>BRANDING</b>\n"
+        "<code>/setheader Your Header</code>\n"
+        "<code>/setfooter Your Footer</code>\n\n"
+
+        "🔗 <b>LINK GUARD</b>\n"
+        "<code>/linkguard on</code>\n"
+        "<code>/linkguard off</code>\n\n"
+
+        "📊 <b>STATUS</b>\n"
+        "<code>/status</code>\n\n"
+
+        "🧹 <b>CLEAR RULES</b>\n"
+        "<code>/clear</code>\n\n"
+
+        "🎛️ <b>DASHBOARD</b>\n"
+        "<code>/panel</code>"
+    )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ Add Me to Channel",
+                    url=(
+                        f"https://t.me/{BOT_USERNAME}"
+                        "?startchannel=true"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "👥 Support",
+                    url="https://t.me/dghelps_bot",
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔙 Dashboard",
+                    callback_data="panel",
+                )
+            ],
+        ]
+    )
+
+    if update.callback_query:
+
+        await update.callback_query.edit_message_text(
+            text=get_help_text(),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+    elif update.message:
+
+        await update.message.reply_text(
+            text=get_help_text(),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+
+# ============================================================
+# PREMIUM RULES VIEW
+# ============================================================
+
+async def rules_view(
+    query,
+):
+    user_id = query.from_user.id
+
+    channel_id = get_selected_channel(
+        user_id
+    )
+
+    if not channel_id:
+
+        await query.edit_message_text(
+            "⚠️ <b>No Channel Selected</b>\n\n"
+            "Use /channels first.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Dashboard",
+                            callback_data="panel",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return
+
+    config = get_channel_config(
+        channel_id
+    )
+
+    rules = config.get(
+        "replacement_rules",
+        {},
+    )
+
+    text = (
+        "🔄 <b>REPLACEMENT RULES</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    if not rules:
+
+        text += (
+            "📭 <i>No rules configured.</i>\n\n"
+        )
+
     else:
-        last = int(rec.get("last_id", 0))
-        pending = [e for e in eps if int(e["id"]) > last]
 
-    if not pending:
-        print("  Naya kuch nahi")
-        return True
+        for old, rule in list(
+            rules.items()
+        )[:30]:
 
-    for e in pending:
-        if send_tg(dangal_caption(show, e), dangal_poster(e["id"])):
-            state["dangal"][key] = {"last_id": int(e["id"])}
-            save_state(state)
-        else:
-            return False
-    return True
+            new = rule_value(
+                rule
+            )
 
+            text += (
+                f"🔎 <code>{html.escape(str(old))}</code>\n"
+                f"   ➡️ <code>{html.escape(str(new))}</code>\n\n"
+            )
+
+        if len(rules) > 30:
+            text += (
+                f"<i>Showing first 30 of "
+                f"{len(rules)} rules.</i>\n\n"
+            )
+
+    text += (
+        "➕ Add:\n"
+        "<code>/addrule old -> new</code>\n\n"
+
+        "🗑️ Delete:\n"
+        "<code>/delrule old</code>"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ Add Rule",
+                    callback_data="rule_help",
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📊 Status",
+                    callback_data="status",
+                ),
+
+                InlineKeyboardButton(
+                    "🔙 Dashboard",
+                    callback_data="panel",
+                ),
+            ],
+        ]
+    )
+
+    await query.edit_message_text(
+        text=text,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+# ============================================================
+# BRANDING VIEW
+# ============================================================
+
+async def branding_view(
+    query,
+):
+    user_id = query.from_user.id
+
+    channel_id = get_selected_channel(
+        user_id
+    )
+
+    if not channel_id:
+
+        await query.edit_message_text(
+            "⚠️ <b>No Channel Selected</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Dashboard",
+                            callback_data="panel",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return
+
+    config = get_channel_config(
+        channel_id
+    )
+
+    header = config.get(
+        "custom_header",
+        "",
+    )
+
+    footer = config.get(
+        "custom_footer",
+        "",
+    )
+
+    header_display = (
+        html.escape(header)
+        if header
+        else "<i>Disabled</i>"
+    )
+
+    footer_display = (
+        html.escape(footer)
+        if footer
+        else "<i>Disabled</i>"
+    )
+
+    link_guard_on = config.get(
+        "link_guard",
+        True,
+    )
+
+    text = (
+        "🎨 <b>BRANDING CENTER</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "📌 <b>Header</b>\n"
+        f"{header_display}\n\n"
+
+        "📌 <b>Footer</b>\n"
+        f"{footer_display}\n\n"
+
+        "📌 <b>Link Guard</b>\n"
+        f"{'🟢 ON — stray links show as plain bold' if link_guard_on else '⚪ OFF — stray links can turn blue'}\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "Use commands:\n\n"
+
+        "📝 <code>/setheader Your Header</code>\n"
+        "📝 <code>/setfooter Your Footer</code>\n\n"
+
+        "Empty karne ke liye:\n"
+        "<code>/setheader</code>\n"
+        "<code>/setfooter</code>"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    (
+                        "🔗 Turn Link Guard OFF"
+                        if link_guard_on
+                        else "🔗 Turn Link Guard ON"
+                    ),
+                    callback_data=(
+                        f"linkguard:{'off' if link_guard_on else 'on'}"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📊 Status",
+                    callback_data="status",
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔙 Dashboard",
+                    callback_data="panel",
+                )
+            ],
+        ]
+    )
+
+    await query.edit_message_text(
+        text=text,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+# ============================================================
+# CALLBACK HANDLER
+# ============================================================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data or ""
+
+    user_id = query.from_user.id
+
+    # --------------------------------------------------------
+    # HOME
+    # --------------------------------------------------------
+
+    if data == "home":
+
+        name = (
+            query.from_user.first_name
+            or "User"
+        )
+
+        text = (
+            f"⚡ <b>Welcome, "
+            f"{html.escape(name)}!</b>\n\n"
+
+            "🚀 <b>Auto Caption Engine</b>\n"
+            "<i>Premium Edition</i>\n\n"
+
+            "🤖 Smart automatic caption "
+            "management for Telegram channels.\n\n"
+
+            "👇 <b>Choose an option</b>"
+        )
+
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=get_start_keyboard(),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # PANEL
+    # --------------------------------------------------------
+
+    if data == "panel":
+
+        await query.edit_message_text(
+            text=get_panel_text(
+                user_id
+            ),
+            parse_mode="HTML",
+            reply_markup=get_panel_keyboard(),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # HELP
+    # --------------------------------------------------------
+
+    if data == "help":
+
+        await help_command(
+            update,
+            context,
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # CHANNELS
+    # --------------------------------------------------------
+
+    if data == "channels":
+
+        user_channels = get_user_channels(
+            user_id
+        )
+
+        if not user_channels:
+
+            await query.edit_message_text(
+                "📭 <b>No Connected Channels</b>\n\n"
+                "Add me to a channel as Administrator first.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "➕ Add Me",
+                                url=(
+                                    f"https://t.me/{BOT_USERNAME}"
+                                    "?startchannel=true"
+                                ),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Dashboard",
+                                callback_data="panel",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+            return
+
+        selected = get_selected_channel(
+            user_id
+        )
+
+        text = (
+            "📢 <b>YOUR CHANNELS</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+        )
+
+        keyboard = []
+
+        for channel in user_channels:
+
+            channel_id = channel.get(
+                "channel_id"
+            )
+
+            title = channel.get(
+                "title",
+                "Channel",
+            )
+
+            mark = (
+                "🟢"
+                if selected == channel_id
+                else "⚪"
+            )
+
+            text += (
+                f"{mark} <b>{html.escape(title)}</b>\n"
+                f"🆔 <code>{channel_id}</code>\n\n"
+            )
+
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        f"🎯 {title[:30]}",
+                        callback_data=(
+                            f"select:{channel_id}"
+                        ),
+                    )
+                ]
+            )
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "🔙 Dashboard",
+                    callback_data="panel",
+                )
+            ]
+        )
+
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # SELECT CHANNEL
+    # --------------------------------------------------------
+
+    if data.startswith(
+        "select:"
+    ):
+
+        try:
+
+            channel_id = int(
+                data.split(
+                    ":",
+                    1,
+                )[1]
+            )
+
+        except Exception:
+
+            await query.answer(
+                "Invalid channel.",
+                show_alert=True,
+            )
+
+            return
+
+        if not user_owns_channel(
+            user_id,
+            channel_id,
+        ):
+
+            await query.answer(
+                "Access denied.",
+                show_alert=True,
+            )
+
+            return
+
+        set_selected_channel(
+            user_id,
+            channel_id,
+        )
+
+        config = get_channel_config(
+            channel_id
+        )
+
+        title = config.get(
+            "title",
+            "Channel",
+        )
+
+        await query.edit_message_text(
+            "✅ <b>CHANNEL SELECTED</b>\n\n"
+            f"📢 <b>{html.escape(title)}</b>\n"
+            f"🆔 <code>{channel_id}</code>\n\n"
+            "All dashboard settings will now "
+            "apply to this channel.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🎛️ Dashboard",
+                            callback_data="panel",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    if data == "status":
+
+        channel_id = get_selected_channel(
+            user_id
+        )
+
+        if not channel_id:
+
+            await query.edit_message_text(
+                "⚠️ <b>No Channel Selected</b>\n\n"
+                "Please select a channel first.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "📢 Channels",
+                                callback_data="channels",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Dashboard",
+                                callback_data="panel",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+            return
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🔄 Rules",
+                        callback_data="rules",
+                    ),
+                    InlineKeyboardButton(
+                        "🎨 Branding",
+                        callback_data="branding",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Dashboard",
+                        callback_data="panel",
+                    )
+                ],
+            ]
+        )
+
+        await query.edit_message_text(
+            build_status_text(
+                channel_id
+            ),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # RULES
+    # --------------------------------------------------------
+
+    if data == "rules":
+
+        await rules_view(
+            query
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # RULE HELP
+    # --------------------------------------------------------
+
+    if data == "rule_help":
+
+        await query.edit_message_text(
+            "🔄 <b>ADD REPLACEMENT RULE</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+
+            "Use this command:\n\n"
+
+            "<code>/addrule old -> new</code>\n\n"
+
+            "Example:\n"
+            "<code>/addrule MovieHub -> DG_Contents</code>\n\n"
+
+            "💡 Matching is case-insensitive.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Rules",
+                            callback_data="rules",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # BRANDING
+    # --------------------------------------------------------
+
+    if data == "branding":
+
+        await branding_view(
+            query
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # LINK GUARD TOGGLE
+    # --------------------------------------------------------
+
+    if data.startswith(
+        "linkguard:"
+    ):
+
+        channel_id = get_selected_channel(
+            user_id
+        )
+
+        if not channel_id or not user_owns_channel(
+            user_id,
+            channel_id,
+        ):
+
+            await query.answer(
+                "Select a channel first.",
+                show_alert=True,
+            )
+
+            return
+
+        enabled = (
+            data.split(
+                ":",
+                1,
+            )[1]
+            == "on"
+        )
+
+        update_channel_config(
+            channel_id,
+            "link_guard",
+            enabled,
+        )
+
+        await query.answer(
+            f"Link Guard {'enabled' if enabled else 'disabled'}."
+        )
+
+        await branding_view(
+            query
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # UNKNOWN
+    # --------------------------------------------------------
+
+    await query.answer(
+        "This button is no longer active.",
+        show_alert=False,
+    )
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    error = context.error
+
+    if isinstance(
+        error,
+        RetryAfter,
+    ):
+
+        logger.warning(
+            "⏳ Global RetryAfter: %.1fs",
+            float(
+                error.retry_after
+            ),
+        )
+
+        return
+
+    if isinstance(
+        error,
+        BadRequest,
+    ):
+
+        if (
+            "message is not modified"
+            in str(error).lower()
+        ):
+
+            logger.info(
+                "⏭️ Ignored MessageNotModified."
+            )
+
+            return
+
+    logger.exception(
+        "Unhandled Telegram error: %s",
+        error,
+    )
+
+    try:
+
+        bot = getattr(
+            context,
+            "bot",
+            None,
+        )
+
+        if bot:
+
+            await send_important_log(
+                bot,
+                "BOT ERROR",
+                (
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                ),
+                "ERROR",
+            )
+
+    except Exception as exc:
+
+        logger.warning(
+            "⚠️ Could not report global error: %s",
+            exc,
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
-    if not TOKEN or not CHAT_ID:
-        print("TG_BOT_TOKEN / TG_CHAT_ID set nahi hain (workflow ke env aur GitHub Secrets ke naam check karo)")
-        sys.exit(1)
 
-    state = load_state()
-    now = datetime.now(timezone.utc)
-    ok = 0
-    sony_ok = zee_ok = dang_ok = hs_ok = 0
-    for show in SHOWS:
-        print(f"== {show['name']}")
-        try:
-            if process_show(show, state, now):
-                ok += 1
-                sony_ok += 1
-        except Exception as e:
-            print("  ERROR:", e)
-    for show in ZEE5_SHOWS:
-        print(f"== [ZEE5] {show['name']}")
-        try:
-            if process_zee5_show(show, state):
-                ok += 1
-                zee_ok += 1
-        except Exception as e:
-            print("  ERROR:", e)
-    if DANGAL_SHOWS:
-        if not HAS_CRYPTO:
-            print("== [DANGAL] 'cryptography' install nahi hai, Dangal skip "
-                  "(requirements.txt me 'cryptography' add karo)")
-        else:
-            dangal_token = None
-            try:
-                dangal_token = dangal_get_token()
-            except Exception as e:
-                print("== [DANGAL] token ERROR:", e)
-            if dangal_token:
-                for show in DANGAL_SHOWS:
-                    print(f"== [DANGAL] {show['name']}")
-                    try:
-                        if process_dangal_show(show, state, dangal_token):
-                            ok += 1
-                            dang_ok += 1
-                    except Exception as e:
-                        print("  ERROR:", e)
-    # JioHotstar alag file (hotstar_part.py) me hai. Wo toote ya Hotstar block kare,
-    # tab bhi upar ke SonyLIV / ZEE5 / Dangal pe koi asar nahi padta.
-    try:
-        import hotstar_part
-        hotstar_part.init(
-            send_tg=send_tg, get_image=get_image, save_state=save_state, IST=IST,
-            HAS_CURL_CFFI=HAS_CURL_CFFI, cffi_requests=globals().get("cffi_requests"),
+    # Render health server
+    threading.Thread(
+        target=start_dummy_server,
+        daemon=True,
+    ).start()
+
+    # --------------------------------------------------------
+    # Application
+    # --------------------------------------------------------
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .concurrent_updates(10)
+        .connection_pool_size(20)
+        .pool_timeout(30.0)
+        .post_init(
+            start_caption_worker
         )
-        h_ok, hs_ok = hotstar_part.run(state)
-        ok += h_ok
-    except Exception as e:   # SyntaxError / IndentationError bhi yahin pakde jate hain
-        print("== [HOTSTAR] hotstar_part.py chala nahi (baaki OTTs theek chal rahe hain):", repr(e))
-    print("=== SUMMARY (kaun kitna theek chala) ===")
-    print(f"SonyLIV : {sony_ok}/{len(SHOWS)} shows")
-    print(f"ZEE5    : {zee_ok}/{len(ZEE5_SHOWS)} shows")
-    print(f"Dangal  : {dang_ok}/{len(DANGAL_SHOWS)} shows")
-    print(f"Hotstar : {'theek chala' if hs_ok else 'NAHI chala / block'}")
-    save_state(state)
-    if ok == 0:
-        print("Koi bhi show kaam nahi kiya")
-        sys.exit(1)
+        .post_shutdown(
+            stop_caption_worker
+        )
+        .build()
+    )
 
+    # --------------------------------------------------------
+    # Commands
+    # --------------------------------------------------------
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "panel",
+            panel,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "connect",
+            connect_channel,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "channels",
+            channels_command,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "usechannel",
+            use_channel,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "addrule",
+            add_rule,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "delrule",
+            del_rule,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "setheader",
+            set_header,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "setfooter",
+            set_footer,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "status",
+            status,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "clear",
+            clear_rules,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "linkguard",
+            link_guard_command,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "disconnect",
+            disconnect_channel,
+        )
+    )
+
+    # --------------------------------------------------------
+    # Inline buttons
+    # --------------------------------------------------------
+
+    app.add_handler(
+        CallbackQueryHandler(
+            button_handler
+        )
+    )
+
+    # --------------------------------------------------------
+    # Channel membership
+    # --------------------------------------------------------
+
+    app.add_handler(
+        ChatMemberHandler(
+            handle_bot_channel_status,
+            ChatMemberHandler.MY_CHAT_MEMBER,
+        )
+    )
+
+    # --------------------------------------------------------
+    # Channel posts
+    # --------------------------------------------------------
+
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST
+            | filters.UpdateType.EDITED_CHANNEL_POST,
+            edit_channel_caption,
+        )
+    )
+
+    # --------------------------------------------------------
+    # Errors
+    # --------------------------------------------------------
+
+    app.add_error_handler(
+        error_handler
+    )
+
+    # --------------------------------------------------------
+    # Startup logs
+    # --------------------------------------------------------
+
+    logger.info(
+        "🤖 Auto Caption Engine Premium starting..."
+    )
+
+    logger.info(
+        "🛡️ Edit mode: Sequential Stable Queue"
+    )
+
+    logger.info(
+        "⏱️ Edit interval: %.2fs-%.2fs (adaptive)",
+        MIN_EDIT_INTERVAL,
+        MAX_EDIT_INTERVAL,
+    )
+
+    logger.info(
+        "📦 Queue max size: %d",
+        QUEUE_MAX_SIZE,
+    )
+
+    logger.info(
+        "👑 Admin IDs: %s",
+        ADMIN_IDS,
+    )
+
+    logger.info(
+        "🤖 Bot username: @%s",
+        BOT_USERNAME,
+    )
+
+    # --------------------------------------------------------
+    # Run
+    # --------------------------------------------------------
+
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
+
+# ============================================================
+# ENTRY
+# ============================================================
 
 if __name__ == "__main__":
     main()
