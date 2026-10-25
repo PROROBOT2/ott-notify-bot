@@ -118,7 +118,7 @@ HOTSTAR_SHOWS = [
     {"name": "Sayoneee", "id": "1271666144"},
 ]
 HOTSTAR_SCAN_EVERY_MIN = 15       # sitemap bade hote hain, isliye 15 min me ek baar scan
-HOTSTAR_SILENT_FIRST_RUN = True   # True: pehli run me purane episodes ka alert nahi (sirf first_alert wale ka)
+HOTSTAR_SILENT_FIRST_RUN = False  # False: turant latest episode ka alert bhejta hai
 
 API_BASE = (
     "https://apiv3.sonyliv.com/AGL/4.8/A/ENG/WEB/IN/RJ/TRAY/SEARCH/VOD"
@@ -133,8 +133,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "air")
 
-TOKEN = (os.environ.get("TG_BOT_TOKEN") or
-         os.environ.get("BOT_TOKEN") or "")
+TOKEN = (os.environ.get("TG_BOT_TOKEN") or os.environ.get("BOT_TOKEN") or "")
+CHAT_ID = (os.environ.get("TG_CHAT_ID") or os.environ.get("CHANNEL_ID") or "")
 CHAT_ID = (os.environ.get("TG_CHAT_ID") or
            os.environ.get("CHANNEL_ID") or "")
 HEADERS = {
@@ -831,10 +831,15 @@ def hotstar_scan():
     for i in range(1, 13):
         if opened == 0 and fails >= 2:
             break                      # shuru ke 2 sitemap hi nahi khule toh aage try nahi karte
-        try:
-            r = requests.get(HOTSTAR_SITEMAP.format(i=i),
-                             headers={"User-Agent": HOTSTAR_UA}, timeout=90)
-        except requests.RequestException as e:
+                try:
+            if HAS_CURL_CFFI:
+                r = cffi_requests.get(HOTSTAR_SITEMAP.format(i=i),
+                                      headers={"User-Agent": HOTSTAR_UA},
+                                      impersonate="chrome120", timeout=90)
+            else:
+                r = requests.get(HOTSTAR_SITEMAP.format(i=i),
+                                 headers={"User-Agent": HOTSTAR_UA}, timeout=90)
+        except Exception as e:
             print(f"  [HOTSTAR] sitemap {i} error: {e}")
             fails += 1
             continue
