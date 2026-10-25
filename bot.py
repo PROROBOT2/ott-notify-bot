@@ -133,8 +133,10 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "air")
 
-TOKEN = os.environ.get("TG_BOT_TOKEN", "")
-CHAT_ID = os.environ.get("TG_CHAT_ID", "")
+TOKEN = (os.environ.get("TG_BOT_TOKEN") or
+         os.environ.get("BOT_TOKEN") or "")
+CHAT_ID = (os.environ.get("TG_CHAT_ID") or
+           os.environ.get("CHANNEL_ID") or "")
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
