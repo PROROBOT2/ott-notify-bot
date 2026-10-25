@@ -17,8 +17,8 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+      TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.CHANNEL_ID }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
