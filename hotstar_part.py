@@ -63,6 +63,7 @@ HOTSTAR_SHOWS = [
     {"name": "Sayoneee", "id": "1271666144"},
 ]
 HOTSTAR_MAX_SECONDS = 150          # sitemap scan itne second se zyada nahi chalega
+HOTSTAR_MAX_AGE_DAYS = 3          # isse purana episode (lastmod ke hisaab se) ka alert nahi jata
 HOTSTAR_SCAN_EVERY_MIN = 15       # sitemap bade hote hain, isliye 15 min me ek baar scan
 HOTSTAR_SILENT_FIRST_RUN = False  # False: turant latest episode ka alert bhejta hai
 
@@ -164,54 +165,100 @@ HOTSTAR_API_H = {
 HOTSTAR_CDN = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x"
 
 
-def hotstar_scan():
-    """Sitemaps se HOTSTAR_SHOWS ke episode links nikalta hai. Return: (found, kitne sitemap khule)."""
-    ids = {s["id"] for s in HOTSTAR_SHOWS}
-    found, opened, fails = {}, 0, 0
-    t0 = time.time()
-    for i in range(1, 13):
+def _hs_get(url):
+    if HAS_CURL_CFFI:
+        return cffi_requests.get(url, headers={"User-Agent": HOTSTAR_UA},
+                                 impersonate="chrome120", timeout=90)
+    return requests.get(url, headers={"User-Agent": HOTSTAR_UA}, timeout=90)
+
+
+def _hs_parse(text, ids, found):
+    for block in re.findall(r"<url>(.*?)</url>", text, re.S):
+        loc = re.search(r"<loc>(.*?)</loc>", block)
+        if not loc:
+            continue
+        loc = loc.group(1).strip()
+        parts = loc.rstrip("/").split("/")
+        try:
+            k = parts.index("shows")
+            sid = parts[k + 2]
+        except (ValueError, IndexError):
+            continue
+        if len(parts) < k + 5:             # sirf show ka page hai, episode ka nahi
+            continue
+        ep_id = parts[-2] if parts[-1] == "watch" else parts[-1]
+        if sid not in ids or not ep_id.isdigit() or ep_id == sid:
+            continue
+        lm = re.search(r"<lastmod>(.*?)</lastmod>", block)
+        found.setdefault(sid, []).append(
+            {"url": loc, "ep_id": ep_id, "lastmod": lm.group(1).strip() if lm else ""})
+
+
+def _hs_scan_urls(urls, ids, found, t0):
+    """Diye gaye sitemap links khol ke episodes nikalta hai. Return: kitne sitemap khule."""
+    queue = list(urls)
+    opened = fails = idx = 0
+    while idx < len(queue):
+        u = queue[idx]
+        idx += 1
+        name = u.rsplit("/", 1)[-1]
         if opened == 0 and fails >= 2:
             break                      # shuru ke 2 sitemap hi nahi khule toh aage try nahi karte
         if time.time() - t0 > HOTSTAR_MAX_SECONDS:
             print("  [HOTSTAR] time limit, baaki sitemap agli run me")
             break
         try:
-            if HAS_CURL_CFFI:
-                r = cffi_requests.get(HOTSTAR_SITEMAP.format(i=i),
-                                      headers={"User-Agent": HOTSTAR_UA},
-                                      impersonate="chrome120", timeout=90)
-            else:
-                r = requests.get(HOTSTAR_SITEMAP.format(i=i),
-                                 headers={"User-Agent": HOTSTAR_UA}, timeout=90)
+            r = _hs_get(u)
         except Exception as e:
-            print(f"  [HOTSTAR] sitemap {i} error: {e}")
+            print(f"  [HOTSTAR] {name} error: {e}")
             fails += 1
             continue
         if r.status_code == 404 and opened:
             break
         if r.status_code != 200:
-            print(f"  [HOTSTAR] sitemap {i} status {r.status_code}")
+            snippet = re.sub(r"\s+", " ", (r.text or "")[:120])
+            print(f"  [HOTSTAR] {name} status {r.status_code} | {snippet}")
             fails += 1
             continue
         opened += 1
-        for block in re.findall(r"<url>(.*?)</url>", r.text, re.S):
-            loc = re.search(r"<loc>(.*?)</loc>", block)
-            if not loc:
-                continue
-            loc = loc.group(1).strip()
-            parts = loc.rstrip("/").split("/")
-            try:
-                k = parts.index("shows")
-                sid = parts[k + 2]
-            except (ValueError, IndexError):
-                continue
-            ep_id = parts[-2] if parts[-1] == "watch" else parts[-1]
-            if sid not in ids or not ep_id.isdigit():
-                continue
-            lm = re.search(r"<lastmod>(.*?)</lastmod>", block)
-            found.setdefault(sid, []).append(
-                {"url": loc, "ep_id": ep_id, "lastmod": lm.group(1).strip() if lm else ""})
-        print(f"  [HOTSTAR] sitemap {i}: OK")
+        if "<sitemapindex" in r.text:       # index file: andar ke episode sitemaps bhi kholo
+            kids = [k.strip() for k in re.findall(r"<loc>(.*?)</loc>", r.text)
+                    if "episode" in k.lower()]
+            queue.extend(kids[:15])
+            print(f"  [HOTSTAR] {name}: index, {len(kids)} episode sitemap mile")
+        else:
+            _hs_parse(r.text, ids, found)
+            print(f"  [HOTSTAR] {name}: OK")
+    return opened
+
+
+def _hs_discover():
+    """robots.txt se episode sitemaps ke links (agar fixed naam kaam na kare)."""
+    try:
+        r = _hs_get("https://www.hotstar.com/robots.txt")
+    except Exception as e:
+        print("  [HOTSTAR] robots.txt error:", e)
+        return []
+    if r.status_code != 200:
+        print(f"  [HOTSTAR] robots.txt status {r.status_code}")
+        return []
+    urls = [u.strip() for u in re.findall(r"(?im)^\s*sitemap:\s*(\S+)", r.text)
+            if "episode" in u.lower() or re.search(r"index|/sitemap\.xml$", u.lower())]
+    print(f"  [HOTSTAR] robots.txt se {len(urls)} sitemap mile")
+    return urls[:15]
+
+
+def hotstar_scan():
+    """Sitemaps se HOTSTAR_SHOWS ke episode links nikalta hai. Return: (found, kitne sitemap khule)."""
+    ids = {s["id"] for s in HOTSTAR_SHOWS}
+    found = {}
+    t0 = time.time()
+    fixed = [HOTSTAR_SITEMAP.format(i=i) for i in range(1, 13)]
+    opened = _hs_scan_urls(fixed, ids, found, t0)
+    if opened == 0:
+        urls = _hs_discover()
+        if urls:
+            opened = _hs_scan_urls(urls, ids, found, t0)
     return found, opened
 
 
@@ -291,15 +338,30 @@ def process_hotstar(state):
         return False
     state["hotstar_scan"] = {"ts": now_ts, "ok": True}
     save_state(state)
+    newest = max((e["lastmod"][:10] for v in found.values() for e in v if e.get("lastmod")),
+                 default="")
+    print(f"  [HOTSTAR] sitemap me hamare shows ka sabse naya lastmod: {newest or '?'}")
     for show in HOTSTAR_SHOWS:
         eps = found.get(show["id"], [])
         if not eps:
             print(f"  [HOTSTAR] {show['name']}: sitemap me episode nahi mila")
             continue
         latest = max(eps, key=lambda e: int(e["ep_id"]))
+        lm = (latest.get("lastmod") or "")[:10]
+        print(f"  [HOTSTAR] {show['name']}: latest ep {latest['ep_id']} | lastmod {lm or '?'}")
         last_id = state["hotstar"].get(show["id"])
         if last_id is not None and int(latest["ep_id"]) <= int(last_id):
             continue
+        if lm:
+            try:
+                age = (datetime.now(IST).date() - datetime.strptime(lm, "%Y-%m-%d").date()).days
+            except ValueError:
+                age = 0
+            if age > HOTSTAR_MAX_AGE_DAYS:
+                state["hotstar"][show["id"]] = latest["ep_id"]
+                save_state(state)
+                print(f"  [HOTSTAR] {show['name']}: purana episode ({age} din), alert nahi")
+                continue
         if last_id is None and HOTSTAR_SILENT_FIRST_RUN and not show.get("first_alert"):
             state["hotstar"][show["id"]] = latest["ep_id"]
             save_state(state)
