@@ -64,7 +64,7 @@ HOTSTAR_SHOWS = [
 ]
 HOTSTAR_MAX_SECONDS = 150          # sitemap scan itne second se zyada nahi chalega
 HOTSTAR_MAX_AGE_DAYS = 3          # isse purana episode (lastmod ke hisaab se) ka alert nahi jata
-HOTSTAR_SCAN_EVERY_MIN = 15       # sitemap bade hote hain, isliye 15 min me ek baar scan
+HOTSTAR_SCAN_EVERY_MIN = 5       # sitemap bade hote hain, isliye 15 min me ek baar scan
 HOTSTAR_SILENT_FIRST_RUN = False  # False: turant latest episode ka alert bhejta hai
 
 def tvmaze_latest(tv_id):
@@ -153,6 +153,7 @@ def process_timed_show(show, state, now=None):
     return False
 
 
+HOTSTAR_INDEX = "https://www.hotstar.com/in/new-sitemap.xml"   # robots.txt wala asli index
 HOTSTAR_SITEMAP = "https://www.hotstar.com/in/new-sitemap-EPISODE-{i}.xml"
 HOTSTAR_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -248,8 +249,8 @@ def _hs_discover():
     return urls[:15]
 
 
-def hotstar_scan():
-    """Sitemaps se HOTSTAR_SHOWS ke episode links nikalta hai. Return: (found, kitne sitemap khule)."""
+def _hs_scan_fallback():
+    """Purana tarika: fixed naam / robots.txt (index kaam na kare tab)."""
     ids = {s["id"] for s in HOTSTAR_SHOWS}
     found = {}
     t0 = time.time()
@@ -259,6 +260,81 @@ def hotstar_scan():
         urls = _hs_discover()
         if urls:
             opened = _hs_scan_urls(urls, ids, found, t0)
+    return found, opened
+
+
+def _hs_index_children(text):
+    kids = []
+    for block in re.findall(r"<sitemap>(.*?)</sitemap>", text, re.S):
+        loc = re.search(r"<loc>(.*?)</loc>", block)
+        if not loc:
+            continue
+        lm = re.search(r"<lastmod>(.*?)</lastmod>", block)
+        kids.append((loc.group(1).strip(), lm.group(1).strip() if lm else ""))
+    return kids
+
+
+def _hs_num(url):
+    m = re.search(r"(\d+)\.xml$", url)
+    return int(m.group(1)) if m else 0
+
+
+def hotstar_scan(state=None):
+    """robots.txt wale asli index (new-sitemap.xml) se saare episode sitemaps dekhta hai.
+    Sirf wahi sitemap dobara kholta hai jinka lastmod badla ho, isliye har run halka rehta hai.
+    Return: (found, kitne requests theek chale)."""
+    ids = {s["id"] for s in HOTSTAR_SHOWS}
+    t0 = time.time()
+    book = state.setdefault("hotstar_sm", {}) if state is not None else {}
+    mods = book.setdefault("mods", {})
+    best = book.setdefault("best", {})
+    opened = 0
+    kids = []
+    try:
+        r = _hs_get(HOTSTAR_INDEX)
+        if r.status_code == 200 and "<sitemapindex" in r.text:
+            kids = [(u, lm) for u, lm in _hs_index_children(r.text) if "episode" in u.lower()]
+            opened += 1
+        else:
+            snippet = re.sub(r"\s+", " ", (r.text or "")[:120])
+            print(f"  [HOTSTAR] index status {r.status_code} | {snippet}")
+    except Exception as e:
+        print("  [HOTSTAR] index error:", e)
+    if not kids:
+        print("  [HOTSTAR] index se episode sitemap nahi mile, purana tarika")
+        return _hs_scan_fallback()
+
+    kids.sort(key=lambda k: _hs_num(k[0]), reverse=True)        # sabse naye (bade number) pehle
+    lms = [lm for _, lm in kids if lm]
+    print(f"  [HOTSTAR] index: {len(kids)} episode sitemap | sabse naya lastmod: {max(lms) if lms else '?'}")
+    for u, lm in kids[:3]:
+        print(f"    - {u.rsplit('/', 1)[-1]} (lastmod {lm or '?'})")
+    always = {u for u, _ in kids[:3]} if len(lms) < len(kids) else set()   # lastmod na ho toh aakhri 3 hamesha
+    for u, lm in kids:
+        if time.time() - t0 > HOTSTAR_MAX_SECONDS:
+            print("  [HOTSTAR] time limit, baaki sitemap agli run me")
+            break
+        if u in mods and mods[u] == lm and u not in always:
+            continue                                            # badla nahi, dobara nahi kholte
+        try:
+            rr = _hs_get(u)
+        except Exception as e:
+            print(f"  [HOTSTAR] {u.rsplit('/', 1)[-1]} error: {e}")
+            continue
+        if rr.status_code != 200:
+            snippet = re.sub(r"\s+", " ", (rr.text or "")[:120])
+            print(f"  [HOTSTAR] {u.rsplit('/', 1)[-1]} status {rr.status_code} | {snippet}")
+            continue
+        tmp = {}
+        _hs_parse(rr.text, ids, tmp)
+        for sid, entries in tmp.items():
+            cand = max(entries, key=lambda e: int(e["ep_id"]))
+            if sid not in best or int(cand["ep_id"]) > int(best[sid]["ep_id"]):
+                best[sid] = cand
+        mods[u] = lm
+        opened += 1
+        print(f"  [HOTSTAR] {u.rsplit('/', 1)[-1]}: OK")
+    found = {sid: [best[sid]] for sid in best if sid in ids}
     return found, opened
 
 
@@ -329,9 +405,9 @@ def process_hotstar(state):
     now_ts = datetime.now(timezone.utc).timestamp()
     last = state.get("hotstar_scan") or {}
     if last.get("ts") and now_ts - last["ts"] < HOTSTAR_SCAN_EVERY_MIN * 60:
-        print("  [HOTSTAR] abhi scan nahi (15 min me ek baar)")
+        print(f"  [HOTSTAR] abhi scan nahi ({HOTSTAR_SCAN_EVERY_MIN} min me ek baar)")
         return bool(last.get("ok"))
-    found, opened = hotstar_scan()
+    found, opened = hotstar_scan(state)
     if opened == 0:
         state["hotstar_scan"] = {"ts": None, "ok": False}
         print("  [HOTSTAR] koi sitemap nahi khula (block ya error)")
