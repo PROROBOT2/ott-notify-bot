@@ -220,8 +220,8 @@
   "hotstar": {},
   "timed_ep": {},
   "hotstar_scan": {
-    "ts": null,
-    "ok": false
+    "ts": 1793178966.454582,
+    "ok": true
   },
   "hotstar_sm": {
     "mods": {},
