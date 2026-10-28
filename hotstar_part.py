@@ -4,10 +4,13 @@ Is file me kuch bigad jaye (galti se ya Hotstar badal jaye) toh sirf JioHotstar 
 SonyLIV / ZEE5 / Dangal ke alerts chalte rahenge, kyunki bot.py is file ko try/except me import karta hai.
 JioHotstar ka saara kaam (shows jodna, badalna) sirf yahin karo, bot.py ko mat chhedo.
 """
+import gzip
 import html
 import json
 import re
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -32,12 +35,11 @@ def init(**helpers):
 # (JioHotstar pe episode thodi der baad aata hai), air_days: 0=Mon ... 6=Sun
 # poster = apni image ka raw GitHub link (khali chhodo toh bina poster ke jayega)
 # ---------------------------------------------------------------
-TIMED_SHOWS = [
-    {"name": "Yeh Rishta Kya Kehlata Hai", "platform": "JIOHOTSTAR", "tvmaze_id": 55393,
-     "backup_for_hotstar": True,   # sirf tab chalta hai jab neeche wala HOTSTAR sitemap scan fail ho
-     "air_time": "21:30", "delay_min": 45, "air_days": [0, 1, 2, 3, 4, 5, 6],
-     "link": "https://www.hotstar.com/in/shows/yeh-rishta/586", "poster": ""},
-]
+TIMED_SHOWS = []   # time wala alert abhi band hai. Chahiye ho toh yahan entry daalo (neeche example).
+# Example:
+# {"name": "Show Naam", "platform": "JIOHOTSTAR", "tvmaze_id": 55393, "backup_for_hotstar": True,
+#  "air_time": "21:30", "delay_min": 45, "air_days": [0, 1, 2, 3, 4, 5, 6],
+#  "link": "https://www.hotstar.com/in/shows/yeh-rishta/586", "poster": ""},
 # tvmaze_id: TVmaze (free public API) se episode ka number, title aur poster aata hai.
 # Naya show: tvmaze.com pe show kholo, URL me tvmaze.com/shows/<NUMBER>/... wahi number daalo.
 
@@ -63,6 +65,7 @@ HOTSTAR_SHOWS = [
     {"name": "Sayoneee", "id": "1271666144"},
 ]
 HOTSTAR_MAX_SECONDS = 150          # sitemap scan itne second se zyada nahi chalega
+HOTSTAR_TEST_ONCE = True          # True: Hotstar ka data khulte hi ek baar 2 TEST alert jata hai (pata chale sab chal raha hai). Baad me False kar do.
 HOTSTAR_MAX_AGE_DAYS = 3          # isse purana episode (lastmod ke hisaab se) ka alert nahi jata
 HOTSTAR_SCAN_EVERY_MIN = 5       # sitemap bade hote hain, isliye 15 min me ek baar scan
 HOTSTAR_SILENT_FIRST_RUN = False  # False: turant latest episode ka alert bhejta hai
@@ -166,11 +169,73 @@ HOTSTAR_API_H = {
 HOTSTAR_CDN = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x"
 
 
-def _hs_get(url):
+def _hs_is_xml(text):
+    """Asli sitemap XML hai ya Hotstar ka HTML page (geo/block page, status 200 ke saath)?"""
+    head = (text or "")[:3000]
+    return "<urlset" in head or "<sitemapindex" in head
+
+
+class _Resp:
+    def __init__(self, status_code, text):
+        self.status_code = status_code
+        self.text = text
+
+
+def _hs_fetch_urllib(url):
+    """Seedha-saada client (jaisa dost ke chalte bot me hai): browser jaisa nahi dikhta."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Encoding": "gzip, deflate",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+            if "gzip" in (resp.headers.get("Content-Encoding") or ""):
+                data = gzip.decompress(data)
+            return _Resp(resp.status, data.decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return _Resp(e.code, body)
+
+
+def _hs_fetch_requests(url):
+    return requests.get(url, headers={"User-Agent": HOTSTAR_UA}, timeout=60)
+
+
+def _hs_fetch_curl(url):
+    return cffi_requests.get(url, headers={"User-Agent": HOTSTAR_UA},
+                             impersonate="chrome120", timeout=60)
+
+
+_HS_PREF = []      # jo client pichli baar chala, wo pehle try hota hai
+
+
+def _hs_get(url, xml=True):
+    """Teen tarike se try karta hai: urllib, requests, curl_cffi. Jo asli XML de, wahi le leta hai."""
+    clients = [("urllib", _hs_fetch_urllib), ("requests", _hs_fetch_requests)]
     if HAS_CURL_CFFI:
-        return cffi_requests.get(url, headers={"User-Agent": HOTSTAR_UA},
-                                 impersonate="chrome120", timeout=90)
-    return requests.get(url, headers={"User-Agent": HOTSTAR_UA}, timeout=90)
+        clients.append(("curl_cffi", _hs_fetch_curl))
+    clients.sort(key=lambda c: 0 if c[0] in _HS_PREF else 1)
+    last = None
+    for name, fn in clients:
+        try:
+            r = fn(url)
+        except Exception as e:
+            print(f"  [HOTSTAR] {name} client error: {e}")
+            continue
+        last = r
+        good = r.status_code == 200 and (_hs_is_xml(r.text) if xml else True)
+        if good:
+            if _HS_PREF != [name]:
+                print(f"  [HOTSTAR] client chala: {name}")
+                _HS_PREF[:] = [name]
+            return r
+    if last is None:
+        raise RuntimeError("koi bhi client nahi chala")
+    return last
 
 
 def _hs_parse(text, ids, found):
@@ -221,6 +286,11 @@ def _hs_scan_urls(urls, ids, found, t0):
             print(f"  [HOTSTAR] {name} status {r.status_code} | {snippet}")
             fails += 1
             continue
+        if not _hs_is_xml(r.text):
+            snippet = re.sub(r"\s+", " ", (r.text or "")[:100])
+            print(f"  [HOTSTAR] {name}: HTML mila, XML nahi (geo/block page) | {snippet}")
+            fails += 1
+            continue
         opened += 1
         if "<sitemapindex" in r.text:       # index file: andar ke episode sitemaps bhi kholo
             kids = [k.strip() for k in re.findall(r"<loc>(.*?)</loc>", r.text)
@@ -236,7 +306,7 @@ def _hs_scan_urls(urls, ids, found, t0):
 def _hs_discover():
     """robots.txt se episode sitemaps ke links (agar fixed naam kaam na kare)."""
     try:
-        r = _hs_get("https://www.hotstar.com/robots.txt")
+        r = _hs_get("https://www.hotstar.com/robots.txt", xml=False)
     except Exception as e:
         print("  [HOTSTAR] robots.txt error:", e)
         return []
@@ -310,7 +380,11 @@ def hotstar_scan(state=None):
     for u, lm in kids[:3]:
         print(f"    - {u.rsplit('/', 1)[-1]} (lastmod {lm or '?'})")
     always = {u for u, _ in kids[:3]} if len(lms) < len(kids) else set()   # lastmod na ho toh aakhri 3 hamesha
+    bad = 0
     for u, lm in kids:
+        if bad >= 2:
+            print("  [HOTSTAR] lagatar HTML/block page aa raha hai, baaki sitemap agli run me")
+            break
         if time.time() - t0 > HOTSTAR_MAX_SECONDS:
             print("  [HOTSTAR] time limit, baaki sitemap agli run me")
             break
@@ -324,6 +398,11 @@ def hotstar_scan(state=None):
         if rr.status_code != 200:
             snippet = re.sub(r"\s+", " ", (rr.text or "")[:120])
             print(f"  [HOTSTAR] {u.rsplit('/', 1)[-1]} status {rr.status_code} | {snippet}")
+            continue
+        if not _hs_is_xml(rr.text):
+            snippet = re.sub(r"\s+", " ", (rr.text or "")[:100])
+            print(f"  [HOTSTAR] {u.rsplit('/', 1)[-1]}: HTML mila, XML nahi (geo/block page) | {snippet}")
+            bad += 1
             continue
         tmp = {}
         _hs_parse(rr.text, ids, tmp)
@@ -417,6 +496,26 @@ def process_hotstar(state):
     newest = max((e["lastmod"][:10] for v in found.values() for e in v if e.get("lastmod")),
                  default="")
     print(f"  [HOTSTAR] sitemap me hamare shows ka sabse naya lastmod: {newest or '?'}")
+    if HOTSTAR_TEST_ONCE and not state.get("hotstar_test_done") and found:
+        by_id = {s["id"]: s for s in HOTSTAR_SHOWS}
+        cands = []
+        for sid, eps_ in found.items():
+            if sid in by_id and eps_:
+                top = max(eps_, key=lambda e: int(e["ep_id"]))
+                cands.append((top.get("lastmod") or "", sid, top))
+        cands.sort(reverse=True)                      # sabse fresh wale 2 shows
+        for _, sid, top in cands[:2]:
+            tshow = by_id[sid]
+            tdet = hotstar_details(tshow, top)
+            tposter = get_image(tdet["img"]) if tdet["img"] else None
+            if send_tg("TEST ALERT (ek baar, JioHotstar chal raha hai)\n\n"
+                       + hotstar_caption(tshow, top, tdet), tposter):
+                print(f"  [HOTSTAR] TEST alert bheja: {tshow['name']}")
+                prev = state["hotstar"].get(sid)
+                if prev is None or int(top["ep_id"]) > int(prev):
+                    state["hotstar"][sid] = top["ep_id"]        # wahi episode dobara real alert na bane
+        state["hotstar_test_done"] = True
+        save_state(state)
     for show in HOTSTAR_SHOWS:
         eps = found.get(show["id"], [])
         if not eps:
