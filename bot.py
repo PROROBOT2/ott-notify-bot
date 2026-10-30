@@ -60,6 +60,7 @@ ZEE5_SHOWS = [
     {"name": "Vasudha", "id": "0-6-4z5612471", "slug": "vasudha"},
     {"name": "Sach Subhash Chandra Show", "id": "0-6-4z5865856", "slug": "sach-subhash-chandra-show"},
     {"name": "Dilo Ki Ram Leela", "id": "0-6-4z51028474", "slug": "dilo-ki-ram-leela"},
+    {"name": "Sa Re Ga Ma Pa", "id": "0-6-4z51079670", "slung": "sa-re-ga-ma-pa-2026"},
     {"name": "Jagadhatri", "id": "0-6-4z5853175", "slug": "jagadhatri"},
 ]
 ZEE5_PAGE = "https://www.zee5.com/tv-shows/details/{slug}/{id}"
