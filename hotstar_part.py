@@ -346,12 +346,24 @@ def process_hotstar(state):
         last_id = state["hotstar"].get(show["id"])
         if last_id is not None and int(latest["ep_id"]) <= int(last_id):
             continue
-        if last_id is None and HOTSTAR_SILENT_FIRST_RUN and not show.get("first_alert"):
+                if last_id is None and HOTSTAR_SILENT_FIRST_RUN and not show.get("first_alert"):
             state["hotstar"][show["id"]] = latest["ep_id"]
             save_state(state)
             print(f"  [HOTSTAR] {show['name']}: pehli baar, latest save kiya (alert nahi)")
             continue
         det = hotstar_details(show, latest)
+        # Pehli baar me purana episode (7+ din purana) alert nahi karte — sirf save karte hain
+        if last_id is None and not show.get("first_alert"):
+            try:
+                ep_date = datetime.strptime(det["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(timezone.utc) - ep_date).days
+                if age_days > 7:
+                    state["hotstar"][show["id"]] = latest["ep_id"]
+                    save_state(state)
+                    print(f"  [HOTSTAR] {show['name']}: pehli baar mila episode {age_days} din purana ({det['date']}), alert nahi — ep_id save kiya")
+                    continue
+            except Exception:
+                pass
         poster = get_image(det["img"]) if det["img"] else None
         if send_tg(hotstar_caption(show, latest, det), poster):
             state["hotstar"][show["id"]] = latest["ep_id"]
