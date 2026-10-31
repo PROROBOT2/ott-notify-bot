@@ -34,37 +34,65 @@ def init(**helpers):
 # ---------------------------------------------------------------
 TIMED_SHOWS = [
     {"name": "Yeh Rishta Kya Kehlata Hai", "platform": "JIOHOTSTAR", "tvmaze_id": 55393,
-     "backup_for_hotstar": True,   # sirf tab chalta hai jab neeche wala HOTSTAR sitemap scan fail ho
+     "backup_for_hotstar": True,   # sirf tab chalta hai jab neeche wala HOTSTAR scan fail ho
      "air_time": "21:30", "delay_min": 45, "air_days": [0, 1, 2, 3, 4, 5, 6],
      "link": "https://www.hotstar.com/in/shows/yeh-rishta/586", "poster": ""},
 ]
-# tvmaze_id: TVmaze (free public API) se episode ka number, title aur poster aata hai.
-# Naya show: tvmaze.com pe show kholo, URL me tvmaze.com/shows/<NUMBER>/... wahi number daalo.
 
 # ---------------------------------------------------------------
 # JIOHOTSTAR SHOWS: id = show ke link me ka number
 # https://www.hotstar.com/in/shows/<naam>/<ID>
-# Naye episode Hotstar ke public sitemap se pakde jate hain (episode ka asli link milta hai).
+# Naye episode Hotstar ke direct API + sitemap (fallback) se pakde jate hain.
 # tvmaze_id (optional): poster / episode number ka backup source
 # first_alert: True ho toh pehli run me bhi latest episode ka alert jata hai (test ke liye)
+# url: show page link — notification me yahi jayega
 # ---------------------------------------------------------------
 HOTSTAR_SHOWS = [
-    {"name": "Yeh Rishta Kya Kehlata Hai", "id": "586", "tvmaze_id": 55393, "first_alert": True},
-    {"name": "Bigg Boss", "id": "1971002586"},
-    {"name": "Roadies Rebirth", "id": "1971002274"},
-    {"name": "Yeh Fitoor Tera", "id": "1271650854"},
-    {"name": "Anupama", "id": "1260022017"},
-    {"name": "Oh Humnava Tum Dena Saath Mera", "id": "1271616684"},
-    {"name": "Tuu Juliet Jatt Di", "id": "1271463159"},
-    {"name": "Dhamaal with Pati Patni aur Panga", "id": "1271427882"},
-    {"name": "Udne Ki Aasha", "id": "1271270408"},
-    {"name": "Dr. Aarambhi", "id": "1271522330"},
-    {"name": "Mannat Har Khushi Paane Ki", "id": "1971311993"},
-    {"name": "Sayoneee", "id": "1271666144"},
+    {"name": "Yeh Rishta Kya Kehlata Hai", "id": "586", "tvmaze_id": 55393,
+     "first_alert": True,
+     "url": "https://www.hotstar.com/in/shows/yeh-rishta/586"},
+    {"name": "Bigg Boss", "id": "1971002586",
+     "url": "https://www.hotstar.com/in/shows/bigg-boss/1971002586"},
+    {"name": "Roadies Rebirth", "id": "1971002274",
+     "url": "https://www.hotstar.com/in/shows/roadies-rebirth/1971002274"},
+    {"name": "Yeh Fitoor Tera", "id": "1271650854",
+     "url": "https://www.hotstar.com/in/shows/yeh-fitoor-tera/1271650854"},
+    {"name": "Anupama", "id": "1260022017",
+     "url": "https://www.hotstar.com/in/shows/anupama/1260022017"},
+    {"name": "Oh Humnava Tum Dena Saath Mera", "id": "1271616684",
+     "url": "https://www.hotstar.com/in/shows/oh-humnava-tum-dena-saath-mera/1271616684"},
+    {"name": "Tuu Juliet Jatt Di", "id": "1271463159",
+     "url": "https://www.hotstar.com/in/shows/tuu-juliet-jatt-di/1271463159"},
+    {"name": "Dhamaal with Pati Patni aur Panga", "id": "1271427882",
+     "url": "https://www.hotstar.com/in/shows/dhamaal-with-pati-patni-aur-panga/1271427882"},
+    {"name": "Udne Ki Aasha", "id": "1271270408",
+     "url": "https://www.hotstar.com/in/shows/udne-ki-aasha/1271270408"},
+    {"name": "Dr. Aarambhi", "id": "1271522330",
+     "url": "https://www.hotstar.com/in/shows/dr-aarambhi/1271522330"},
+    {"name": "Mannat Har Khushi Paane Ki", "id": "1971311993",
+     "url": "https://www.hotstar.com/in/shows/mannat-har-khushi-paane-ki/1971311993"},
+    {"name": "Sayoneee", "id": "1271666144",
+     "url": "https://www.hotstar.com/in/shows/sayoneee/1271666144"},
 ]
-HOTSTAR_MAX_SECONDS = 150          # sitemap scan itne second se zyada nahi chalega
-HOTSTAR_SCAN_EVERY_MIN = 15       # sitemap bade hote hain, isliye 15 min me ek baar scan
-HOTSTAR_SILENT_FIRST_RUN = False  # False: turant latest episode ka alert bhejta hai
+
+HOTSTAR_MAX_SECONDS = 150
+HOTSTAR_SCAN_EVERY_MIN = 15
+HOTSTAR_SILENT_FIRST_RUN = False
+
+HOTSTAR_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+HOTSTAR_API_H = {
+    "User-Agent": HOTSTAR_UA,
+    "Accept": "application/json",
+    "x-country-code": "IN",
+    "x-platform-code": "web",
+    "x-tenant-id": "in",
+}
+HOTSTAR_CDN = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x"
+HOTSTAR_SITEMAP = "https://www.hotstar.com/in/new-sitemap-EPISODE-{i}.xml"
+
 
 def tvmaze_latest(tv_id):
     """TVmaze (free public API) se show ka sabse naya aired episode + show poster."""
@@ -152,16 +180,85 @@ def process_timed_show(show, state, now=None):
     return False
 
 
-HOTSTAR_SITEMAP = "https://www.hotstar.com/in/new-sitemap-EPISODE-{i}.xml"
-HOTSTAR_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
-HOTSTAR_API_H = {
-    "User-Agent": HOTSTAR_UA, "Accept": "application/json",
-    "x-country-code": "IN", "x-platform-code": "web", "x-tenant-id": "in",
-}
-HOTSTAR_CDN = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x"
+def _hs_api_parse(data, show_url):
+    """Hotstar API JSON response se episode list nikalo."""
+    if not isinstance(data, dict):
+        return []
+    body = data.get("body", {})
+    results = body.get("results", {})
+    eps = []
+
+    def _pick(item):
+        if not isinstance(item, dict):
+            return
+        cid = str(item.get("contentId", ""))
+        if not cid or not cid.isdigit():
+            return
+        ctype = item.get("contentType", "EPISODE")
+        if ctype and ctype not in ("EPISODE",):
+            return
+        ts = item.get("broadCastDate") or item.get("startDate") or 0
+        lastmod = ""
+        if ts:
+            try:
+                lastmod = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        ep_url = item.get("shareUrl") or show_url
+        eps.append({"ep_id": cid, "url": ep_url, "lastmod": lastmod})
+
+    for tray in results.get("trays", {}).get("items", []):
+        for ep in tray.get("assets", {}).get("items", []):
+            _pick(ep)
+    for ep in results.get("items", {}).get("items", []):
+        _pick(ep)
+    _pick(results.get("item", {}))
+
+    return eps
+
+
+def _hs_api_get(url):
+    if HAS_CURL_CFFI:
+        return cffi_requests.get(
+            url, headers=HOTSTAR_API_H, impersonate="chrome120", timeout=20
+        )
+    return requests.get(url, headers=HOTSTAR_API_H, timeout=20)
+
+
+def hotstar_api_scan():
+    """Hotstar content API se har show ke latest episodes directly fetch karo."""
+    found = {}
+    success = 0
+    endpoints = [
+        "https://api.hotstar.com/o/v2/content/{id}/tabs?filter_tabs=Episode&page=1&tas=10&order=desc",
+        "https://api.hotstar.com/o/v2/content/{id}?tas=10",
+    ]
+    for show in HOTSTAR_SHOWS:
+        show_id = show["id"]
+        show_url = show.get("url", f"https://www.hotstar.com/in/shows/{show_id}")
+        got = False
+        for tmpl in endpoints:
+            if got:
+                break
+            url = tmpl.format(id=show_id)
+            try:
+                r = _hs_api_get(url)
+                if r.status_code != 200:
+                    print(f"  [HS-API] {show['name']}: HTTP {r.status_code}")
+                    continue
+                eps = _hs_api_parse(r.json(), show_url)
+                if eps:
+                    found[show_id] = eps
+                    success += 1
+                    got = True
+                    print(f"  [HS-API] {show['name']}: {len(eps)} episodes mili")
+                else:
+                    print(f"  [HS-API] {show['name']}: response mila par episodes nahi")
+            except Exception as e:
+                print(f"  [HS-API] {show['name']} error: {e}")
+        if not got:
+            print(f"  [HS-API] {show['name']}: API se kuch nahi mila")
+    return found, success
 
 
 def _hs_get(url):
@@ -183,7 +280,7 @@ def _hs_parse(text, ids, found):
             sid = parts[k + 2]
         except (ValueError, IndexError):
             continue
-        if len(parts) < k + 5:             # sirf show ka page hai, episode ka nahi
+        if len(parts) < k + 5:
             continue
         ep_id = parts[-2] if parts[-1] == "watch" else parts[-1]
         if sid not in ids or not ep_id.isdigit() or ep_id == sid:
@@ -194,7 +291,6 @@ def _hs_parse(text, ids, found):
 
 
 def _hs_scan_urls(urls, ids, found, t0):
-    """Diye gaye sitemap links khol ke episodes nikalta hai. Return: kitne sitemap khule."""
     queue = list(urls)
     opened = fails = idx = 0
     while idx < len(queue):
@@ -202,7 +298,7 @@ def _hs_scan_urls(urls, ids, found, t0):
         idx += 1
         name = u.rsplit("/", 1)[-1]
         if opened == 0 and fails >= 2:
-            break                      # shuru ke 2 sitemap hi nahi khule toh aage try nahi karte
+            break
         if time.time() - t0 > HOTSTAR_MAX_SECONDS:
             print("  [HOTSTAR] time limit, baaki sitemap agli run me")
             break
@@ -220,7 +316,7 @@ def _hs_scan_urls(urls, ids, found, t0):
             fails += 1
             continue
         opened += 1
-        if "<sitemapindex" in r.text:       # index file: andar ke episode sitemaps bhi kholo
+        if "<sitemapindex" in r.text:
             kids = [k.strip() for k in re.findall(r"<loc>(.*?)</loc>", r.text)
                     if "episode" in k.lower()]
             queue.extend(kids[:15])
@@ -232,7 +328,6 @@ def _hs_scan_urls(urls, ids, found, t0):
 
 
 def _hs_discover():
-    """robots.txt se episode sitemaps ke links (agar fixed naam kaam na kare)."""
     try:
         r = _hs_get("https://www.hotstar.com/robots.txt")
     except Exception as e:
@@ -248,7 +343,6 @@ def _hs_discover():
 
 
 def hotstar_scan():
-    """Sitemaps se HOTSTAR_SHOWS ke episode links nikalta hai. Return: (found, kitne sitemap khule)."""
     ids = {s["id"] for s in HOTSTAR_SHOWS}
     found = {}
     t0 = time.time()
@@ -262,15 +356,27 @@ def hotstar_scan():
 
 
 def hotstar_details(show, latest):
-    """Title, episode number, date, poster. Pehle Hotstar API, nahi mila toh slug aur TVmaze."""
     parts = latest["url"].rstrip("/").split("/")
-    slug = parts[-3] if parts[-1] == "watch" else parts[-2]
-    title = slug.replace("-", " ").title()
+    try:
+        k = parts.index("shows")
+        slug = parts[k + 1] if len(parts) > k + 1 else ""
+    except ValueError:
+        slug = parts[-2] if len(parts) >= 2 else ""
+    title = (slug or "episode").replace("-", " ").title()
     ep_no, img = "", None
     date = (latest.get("lastmod") or "")[:10] or datetime.now(IST).strftime("%Y-%m-%d")
+
     try:
-        d = requests.get(f"https://api.hotstar.com/o/v2/content/{latest['ep_id']}",
-                         headers=HOTSTAR_API_H, timeout=20)
+        if HAS_CURL_CFFI:
+            d = cffi_requests.get(
+                f"https://api.hotstar.com/o/v2/content/{latest['ep_id']}",
+                headers=HOTSTAR_API_H, impersonate="chrome120", timeout=20
+            )
+        else:
+            d = requests.get(
+                f"https://api.hotstar.com/o/v2/content/{latest['ep_id']}",
+                headers=HOTSTAR_API_H, timeout=20
+            )
         if d.status_code == 200:
             item = d.json().get("body", {}).get("results", {}).get("item", {})
             title = item.get("title") or title
@@ -283,9 +389,10 @@ def hotstar_details(show, latest):
                     img = f"{HOTSTAR_CDN}/{s['publicUri']}"
                     break
         else:
-            print(f"  (Hotstar API status {d.status_code}, slug/TVmaze se detail)")
+            print(f"  (Hotstar detail API status {d.status_code})")
     except Exception as e:
-        print("  (Hotstar API error:", e, ")")
+        print("  (Hotstar detail API error:", e, ")")
+
     if show.get("tvmaze_id") and (not img or not ep_no):
         try:
             tv_ep, tv_poster = tvmaze_latest(show["tvmaze_id"])
@@ -297,6 +404,7 @@ def hotstar_details(show, latest):
                     ep_no = tv_ep.get("number") or ""
         except Exception as e:
             print("  (TVmaze error:", e, ")")
+
     return {"title": title, "ep_no": ep_no, "date": date, "img": img}
 
 
@@ -305,6 +413,7 @@ def hotstar_caption(show, latest, det):
         when = datetime.strptime(det["date"], "%Y-%m-%d").strftime("%d %B %Y")
     except ValueError:
         when = det["date"]
+    show_link = show.get("url") or latest["url"]
     lines = [
         "#NewEpisode #DMT #JIOHOTSTAR #Notification",
         "",
@@ -318,41 +427,54 @@ def hotstar_caption(show, latest, det):
         f"<b>Language: {show.get('lang', 'Hindi')}</b>",
         "",
         "<b>Show Link:</b>",
-        f"<code>{html.escape(latest['url'], quote=False)}</code>",
+        f"<code>{html.escape(show_link, quote=False)}</code>",
     ]
     return "\n".join(lines)
 
 
 def process_hotstar(state):
-    """True = sitemap scan theek chala (ya abhi throttle me hai aur pichla scan theek tha)."""
     now_ts = datetime.now(timezone.utc).timestamp()
     last = state.get("hotstar_scan") or {}
     if last.get("ts") and now_ts - last["ts"] < HOTSTAR_SCAN_EVERY_MIN * 60:
         print("  [HOTSTAR] abhi scan nahi (15 min me ek baar)")
         return bool(last.get("ok"))
-    found, opened = hotstar_scan()
-    if opened == 0:
-        state["hotstar_scan"] = {"ts": None, "ok": False}
-        print("  [HOTSTAR] koi sitemap nahi khula (block ya error)")
-        return False
+
+    print("  [HOTSTAR] API se scan shuru karo...")
+    found, api_ok = hotstar_api_scan()
+
+    if api_ok == 0:
+        print("  [HOTSTAR] API se kuch nahi mila — sitemap fallback try kar raha hai...")
+        found, sitemap_opened = hotstar_scan()
+        if sitemap_opened == 0 and not found:
+            state["hotstar_scan"] = {"ts": None, "ok": False}
+            save_state(state)
+            print("  [HOTSTAR] na API se mila, na sitemap — block ya error")
+            return False
+
     state["hotstar_scan"] = {"ts": now_ts, "ok": True}
     save_state(state)
+
     for show in HOTSTAR_SHOWS:
         eps = found.get(show["id"], [])
         if not eps:
-            print(f"  [HOTSTAR] {show['name']}: sitemap me episode nahi mila")
+            print(f"  [HOTSTAR] {show['name']}: koi episode detect nahi hua")
             continue
+
         latest = max(eps, key=lambda e: int(e["ep_id"]))
         last_id = state["hotstar"].get(show["id"])
+
         if last_id is not None and int(latest["ep_id"]) <= int(last_id):
+            print(f"  [HOTSTAR] {show['name']}: naya episode nahi (saved={last_id}, found={latest['ep_id']})")
             continue
-                if last_id is None and HOTSTAR_SILENT_FIRST_RUN and not show.get("first_alert"):
+
+        if last_id is None and HOTSTAR_SILENT_FIRST_RUN and not show.get("first_alert"):
             state["hotstar"][show["id"]] = latest["ep_id"]
             save_state(state)
-            print(f"  [HOTSTAR] {show['name']}: pehli baar, latest save kiya (alert nahi)")
+            print(f"  [HOTSTAR] {show['name']}: pehli baar — ep_id save kiya, alert nahi")
             continue
+
         det = hotstar_details(show, latest)
-        # Pehli baar me purana episode (7+ din purana) alert nahi karte — sirf save karte hain
+
         if last_id is None and not show.get("first_alert"):
             try:
                 ep_date = datetime.strptime(det["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -360,32 +482,42 @@ def process_hotstar(state):
                 if age_days > 7:
                     state["hotstar"][show["id"]] = latest["ep_id"]
                     save_state(state)
-                    print(f"  [HOTSTAR] {show['name']}: pehli baar mila episode {age_days} din purana ({det['date']}), alert nahi — ep_id save kiya")
+                    print(
+                        f"  [HOTSTAR] {show['name']}: pehli baar mila episode "
+                        f"{age_days} din purana ({det['date']}) — save kiya, alert nahi"
+                    )
                     continue
             except Exception:
                 pass
+
         poster = get_image(det["img"]) if det["img"] else None
         if send_tg(hotstar_caption(show, latest, det), poster):
             state["hotstar"][show["id"]] = latest["ep_id"]
             save_state(state)
             print(f"  [HOTSTAR] Sent: {show['name']} | {det['title']}")
+        else:
+            print(f"  [HOTSTAR] Send failed: {show['name']}")
+
     return True
 
 
 def run(state):
-    """JioHotstar + TIMED alerts chalata hai. Return: (ok count, kya Hotstar sitemap scan theek chala)."""
+    """JioHotstar + TIMED alerts chalata hai. Return: (ok count, kya Hotstar scan theek chala)."""
     ok = 0
     hotstar_ok = False
+
     if HOTSTAR_SHOWS:
-        print("== [HOTSTAR] sitemap scan")
+        print("== [HOTSTAR] scan shuru")
         try:
             hotstar_ok = process_hotstar(state)
             if hotstar_ok:
                 ok += 1
         except Exception as e:
             print("  ERROR:", e)
+
     for show in TIMED_SHOWS:
         if show.get("backup_for_hotstar") and hotstar_ok:
+            print(f"== [TIMED] {show['name']}: hotstar OK hai, backup skip")
             continue
         print(f"== [TIMED] {show['name']}")
         try:
@@ -393,4 +525,5 @@ def run(state):
                 ok += 1
         except Exception as e:
             print("  ERROR:", e)
+
     return ok, hotstar_ok
