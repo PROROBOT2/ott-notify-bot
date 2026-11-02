@@ -31,6 +31,9 @@ SUNNXT_SHOWS = [
     {"name": "Thodi Si Umeed Thoda Sa Aasman", "gid": "GID_255611", "lang": "Hindi"},
     {"name": "Divya Prem", "gid": "GID_225437", "lang": "Hindi"},
 ]
+# In languages ke home "Fresh Episodes" me jitne bhi shows aate hain, sab apne aap track hote hain
+# (upar ki list me naam na bhi ho). Sirf apni list chahiye toh [] kar do. Tamil/Telugu bhi daal sakte ho.
+SUNNXT_AUTO_LANGS = ["Hindi"]
 SUNNXT_MAX_AGE_DAYS = 3        # isse purane episode ka alert nahi jata
 
 API = "https://pwaapi.sunnxt.com"
@@ -73,8 +76,44 @@ def _get_json(url, lang):
     return r.json()
 
 
+def fetch_feed(lang):
+    """Home 'Fresh Episodes' (us language ke naye episodes, alag-alag shows ke)."""
+    lang = (lang or "hindi").lower()
+    if lang not in _feed_cache:
+        feed_url = (f"{API}/content/v2/carousel/portalHomeTvshowsLatestEpisodes"
+                    f"?&level=devicemax&startIndex=1&count=30&contentlang={lang}")
+        try:
+            _feed_cache[lang] = (_get_json(feed_url, lang) or {}).get("results") or []
+        except Exception as e:
+            print("  Fresh Episodes error:", e)
+            _feed_cache[lang] = []
+    return _feed_cache[lang]
+
+
+def clean_name(gname):
+    return re.sub(r"\s*-\s*(Hindi|Tamil|Telugu|Kannada|Malayalam|Marathi|Bengali|Bangla)\s*$", "",
+                  gname or "", flags=re.I).strip()
+
+
+def discover_shows(explicit):
+    """Fresh Episodes feed se naye shows (jo upar ki list me nahi hain)."""
+    known = {s["gid"] for s in explicit}
+    found = []
+    for lang in SUNNXT_AUTO_LANGS:
+        for it in fetch_feed(lang):
+            gid = it.get("globalServiceId")
+            if not gid or gid in known:
+                continue
+            known.add(gid)
+            found.append({"name": clean_name(it.get("globalServiceName")) or gid,
+                          "gid": gid, "lang": lang, "auto": True})
+    return found
+
+
 def fetch_show_items(show, now):
     """Show ke naye episodes (naye pehle). Pehle show-wali API, na chale toh home 'Fresh Episodes'."""
+    if show.get("auto"):
+        return [i for i in fetch_feed(show.get("lang")) if i.get("globalServiceId") == show["gid"]]
     url = (f"{API}/content/v3/vods/{show['gid']}/?&orderBy=releaseDate&orderMode=-1"
            f"&fields={FIELDS}&startIndex=1&count=5&betweenDates={_between(now)}")
     try:
@@ -84,16 +123,7 @@ def fetch_show_items(show, now):
         print("  show API se episode nahi mile, home Fresh Episodes try")
     except Exception as e:
         print("  show API error:", e, "| home Fresh Episodes try")
-    lang = (show.get("lang") or "hindi").lower()
-    if lang not in _feed_cache:
-        feed_url = (f"{API}/content/v2/carousel/portalHomeTvshowsLatestEpisodes"
-                    f"?&level=devicemax&startIndex=1&count=30&contentlang={lang}")
-        try:
-            _feed_cache[lang] = (_get_json(feed_url, lang) or {}).get("results") or []
-        except Exception as e:
-            print("  Fresh Episodes error:", e)
-            _feed_cache[lang] = []
-    return [i for i in _feed_cache[lang] if i.get("globalServiceId") == show["gid"]]
+    return [i for i in fetch_feed(show.get("lang")) if i.get("globalServiceId") == show["gid"]]
 
 
 def parse_item(item):
@@ -235,11 +265,12 @@ def run(state, now=None):
     now = now or datetime.now(IST)
     state.setdefault("sunnxt", {})
     ok = 0
-    for show in SUNNXT_SHOWS:
-        print(f"== [SUNNXT] {show['name']}")
+    shows = list(SUNNXT_SHOWS) + discover_shows(SUNNXT_SHOWS)
+    for show in shows:
+        print(f"== [SUNNXT] {show['name']}" + (" (auto)" if show.get("auto") else ""))
         try:
             if process_show(show, state, now):
                 ok += 1
         except Exception as e:
             print("  ERROR:", e)
-    return ok, len(SUNNXT_SHOWS)
+    return ok, len(shows)
