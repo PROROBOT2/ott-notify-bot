@@ -25,15 +25,15 @@ HOTSTAR_HDR = {
 
 # weekday: 0=Mon ... 6=Sun
 TIMED_SHOWS = [
-    {"name": "Yeh Rishta Kya Kehlata Hai",       "show_id": "586",        "slug": "yeh-rishta",                        "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
+    {"name": "Yeh Rishta Kya Kehlata Hai",       "show_id": "1500000715", "slug": "yeh-rishta-kya-kehlata-hai",        "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Bigg Boss",                          "show_id": "1971002586", "slug": "bigg-boss",                         "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
-    {"name": "Roadies Rebirth",                    "show_id": "1971002274", "slug": "roadies-rebirth",                   "lang": "Hindi", "days": [5,6]},
+    {"name": "Roadies Rebirth",                    "show_id": "1971002274", "slug": "roadies-rebirth",                   "lang": "Hindi", "days": [4,5]},
     {"name": "Yeh Fitoor Tera",                    "show_id": "1271650854", "slug": "yeh-fitoor-tera",                  "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Anupama",                            "show_id": "1260022017", "slug": "anupama",                           "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
-    {"name": "Oh Humnava Tum Dena Saath Mera",     "show_id": "1271616684", "slug": "oh-humnava-tum-dena-saath-mera",   "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
+    {"name": "Oh Humnava Tum Dena Saath Mera",     "show_id": "1271616684", "slug": "oh-humanava-tum-dena-sath-mera",   "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Tuu Juliet Jatt Di",                 "show_id": "1271463159", "slug": "tuu-juliet-jatt-di",               "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Dhamaal with Pati Patni aur Panga",  "show_id": "1271427882", "slug": "dhamaal-with-pati-patni-aur-panga","lang": "Hindi", "days": [5,6]},
-    {"name": "Udne Ki Aasha",                      "show_id": "1271270408", "slug": "udne-ki-aasha",                    "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
+    {"name": "Udne Ki Aasha",                      "show_id": "1260161865", "slug": "udne-ki-aasha",                    "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Dr. Aarambhi",                       "show_id": "1271522330", "slug": "dr-aarambhi",                      "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Mannat Har Khushi Paane Ki",         "show_id": "1971311993", "slug": "mannat-har-khushi-paane-ki",       "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Sayoneee",                           "show_id": "1271666144", "slug": "sayoneee",                         "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
@@ -144,7 +144,16 @@ def _find_today_episode(ep_ids, target_date):
             continue
         ep_date = _utc_date_of(bcast)
         if ep_date == target_date:
-            img_uri = (item.get('imageSets') or [{}])[0].get('publicUri', '')
+            # Pick episode-specific poster (prefer EPISODE_THUMBNAIL over show poster)
+            img_sets = item.get('imageSets') or []
+            img_uri = ''
+            for img_set in img_sets:
+                img_type = str(img_set.get('imageType', '')).upper()
+                if 'EPISODE' in img_type or 'THUMBNAIL' in img_type:
+                    img_uri = img_set.get('publicUri', '')
+                    break
+            if not img_uri and img_sets:
+                img_uri = img_sets[0].get('publicUri', '')
             season  = item.get('season', {})
             return {
                 'ep_id':     ep_id,
