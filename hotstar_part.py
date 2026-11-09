@@ -45,6 +45,7 @@ TIMED_SHOWS = [
     {"name": "Dr. Aarambhi",                       "show_id": "1271522330", "slug": "dr-aarambhi",                       "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Mannat Har Khushi Paane Ki",         "show_id": "1971311993", "slug": "mannat-har-khushi-paane-ki",        "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
     {"name": "Sayoneee",                           "show_id": "1271666144", "slug": "sayoneee",                          "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
+    {"name": "Rizz Master",                        "show_id": "1271719301", "slug": "rizz-master",                        "lang": "Hindi", "days": [0,1,2,3,4,5,6]},
 ]
 
 IMG_BASE  = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x/"
