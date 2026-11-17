@@ -12,8 +12,8 @@ import xml.etree.ElementTree as ET
 
 log = logging.getLogger(__name__)
 
-BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
+BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN") or os.environ.get("BOT_TOKEN",  "")
+CHANNEL_ID = os.environ.get("TG_CHAT_ID")   or os.environ.get("CHANNEL_ID", "")
 
 YT_RSS_BASE = "https://www.youtube.com/feeds/videos.xml?channel_id="
 YT_HANDLE   = "https://www.youtube.com/@{handle}"
@@ -26,6 +26,11 @@ BROWSER_UA = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
+# ---------------------------------------------------------------------------
+# YouTube Channels to Track
+# channel_id: UC... (hardcoded if known, else leave "" to auto-detect from handle)
+# handle:     @handle (used to auto-detect channel_id if not provided)
+# ---------------------------------------------------------------------------
 YT_CHANNELS = [
     {
         "name":       "Mr Indian Hacker",
@@ -35,11 +40,16 @@ YT_CHANNELS = [
     },
     {
         "name":       "Crazy XYZ",
-        "channel_id": "",
+        "channel_id": "",                   # will be auto-detected from handle
         "handle":     "CrazyXYZ",
         "hashtag":    "#CrazyXYZ",
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _ist_now():
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
@@ -62,10 +72,20 @@ def _send(poster_url, caption):
             return True
     return _tg("sendMessage", text=caption)
 
+
+# ---------------------------------------------------------------------------
+# Channel ID auto-detection from handle
+# ---------------------------------------------------------------------------
+
 def _detect_channel_id(handle, state):
+    """
+    Fetch youtube.com/@handle page, extract UC channel ID.
+    Cached in state["yt_channel_ids"][handle].
+    """
     cache = state.setdefault("yt_channel_ids", {})
     if cache.get(handle):
         return cache[handle]
+
     log.info(f"[YOUTUBE] Auto-detecting channel ID for @{handle}...")
     try:
         r = requests.get(
@@ -82,18 +102,30 @@ def _detect_channel_id(handle, state):
         log.warning(f"[YOUTUBE] Channel ID detect error for @{handle}: {e}")
     return None
 
+
+# ---------------------------------------------------------------------------
+# YouTube RSS feed fetch
+# ---------------------------------------------------------------------------
+
 def _fetch_videos(channel_id):
+    """
+    Fetch latest videos from YouTube RSS.
+    Returns list of dicts: {title, video_id, pub_ist (date), pub_dt}
+    """
     url = YT_RSS_BASE + channel_id
     try:
         r = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=20)
         if r.status_code != 200:
+            log.warning(f"[YOUTUBE] RSS HTTP {r.status_code} for {channel_id}")
             return []
+
         ns = {
             'atom': 'http://www.w3.org/2005/Atom',
             'yt':   'http://www.youtube.com/xml/schemas/2015',
         }
-        root   = ET.fromstring(r.text)
-        videos = []
+        root    = ET.fromstring(r.text)
+        videos  = []
+
         for entry in root.findall('atom:entry', ns):
             vid_id = entry.findtext('yt:videoId', namespaces=ns) or ''
             title  = entry.findtext('atom:title',  namespaces=ns) or ''
@@ -105,11 +137,21 @@ def _fetch_videos(channel_id):
                 pub_ist = (pub_dt + datetime.timedelta(hours=5, minutes=30)).date()
             except Exception:
                 pub_ist = None
-            videos.append({'title': title, 'vid': vid_id, 'pub_ist': pub_ist})
+            videos.append({
+                'title':   title,
+                'vid':     vid_id,
+                'pub_ist': pub_ist,
+            })
+
         return videos
     except Exception as e:
         log.warning(f"[YOUTUBE] RSS fetch error: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Caption
+# ---------------------------------------------------------------------------
 
 def _make_caption(ch, video, today_ist):
     date_str  = today_ist.strftime("%d %B %Y")
@@ -123,39 +165,64 @@ def _make_caption(ch, video, today_ist):
         f"Watch Now:\n<code>{video_url}</code>"
     )
 
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
 def run(state: dict):
     """Called by bot.py. Returns (ok_count, yt_ok_bool)."""
     now       = _ist_now()
     today_str = now.strftime("%Y-%m-%d")
     today_ist = now.date()
-    state.setdefault("yt_sent",        {})
-    state.setdefault("yt_channel_ids", {})
+
+    state.setdefault("yt_sent",        {})   # {channel_name: "YYYY-MM-DD"}
+    state.setdefault("yt_channel_ids", {})   # handle -> UC... (cache)
+
     ok_count = sum(1 for ch in YT_CHANNELS
                    if state["yt_sent"].get(ch["name"]) == today_str)
     yt_ok    = ok_count > 0
-    pending  = [ch for ch in YT_CHANNELS
-                if state["yt_sent"].get(ch["name"]) != today_str]
+
+    pending = [ch for ch in YT_CHANNELS
+               if state["yt_sent"].get(ch["name"]) != today_str]
+
     if not pending:
         log.info("[YOUTUBE] All channels already notified today")
         return ok_count, yt_ok
+
     log.info(f"[YOUTUBE] Checking {len(pending)} channels...")
+
     for ch in pending:
-        name  = ch["name"]
+        name = ch["name"]
+
+        # Resolve channel ID
         ch_id = ch.get("channel_id", "")
         if not ch_id:
             ch_id = _detect_channel_id(ch["handle"], state)
         if not ch_id:
             log.warning(f"[YOUTUBE] {name}: no channel ID, skipping")
             continue
-        videos     = _fetch_videos(ch_id)
+
+        # Fetch RSS
+        videos = _fetch_videos(ch_id)
+        if not videos:
+            log.info(f"[YOUTUBE] {name}: no videos from RSS")
+            continue
+
+        # Find today's latest video
         today_vids = [v for v in videos if v["pub_ist"] == today_ist]
         if not today_vids:
             log.info(f"[YOUTUBE] {name}: no new video today yet, will retry")
             continue
-        video   = today_vids[0]
+
+        # Pick the most recent one (first = latest in RSS)
+        video = today_vids[0]
+        log.info(f"[YOUTUBE] {name}: new video → '{video['title']}'")
+
         poster  = YT_THUMB.format(vid=video['vid'])
         caption = _make_caption(ch, video, today_ist)
-        sent    = _send(poster, caption)
+
+        sent = _send(poster, caption)
         if sent:
             state["yt_sent"][name] = today_str
             ok_count += 1
@@ -163,4 +230,5 @@ def run(state: dict):
             log.info(f"[YOUTUBE] SENT: {name}")
         else:
             log.error(f"[YOUTUBE] FAILED: {name}")
+
     return ok_count, yt_ok
