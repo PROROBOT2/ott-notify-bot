@@ -1,276 +1,305 @@
-"""Sun NXT -> Telegram alerts (bot.py se alag file).
-
-Is file me kuch bigad jaye ya Sun NXT block kare, tab bhi SonyLIV / ZEE5 / Dangal / Hotstar chalte rahenge,
-kyunki bot.py is file ko try/except me import karta hai.
-Naya show jodna ho toh sirf neeche SUNNXT_SHOWS me ek line add karo.
 """
-import html
-import re
-from datetime import datetime, timedelta, timezone
+sunnxt_part.py - SunNXT (Sun Neo Hindi) Episode Notifications
+Strategy:
+  1. Auto-detect Sun Neo YouTube channel ID (cached in state)
+  2. Download YouTube RSS feed (no API key needed, free)
+  3. Find today's FULL EPISODE video for each show by keyword matching
+  4. Use YouTube maxresdefault thumbnail as episode poster
+  5. Send Telegram notification
+"""
 
-import requests
+import os, re, datetime, requests, logging
+import xml.etree.ElementTree as ET
 
-# bot.py se aane wale helpers (bot.py init() chalakar inhe set karta hai)
-send_tg = None
-save_state = None
-IST = timezone(timedelta(hours=5, minutes=30))
+log = logging.getLogger(__name__)
 
+BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN") or os.environ.get("BOT_TOKEN",  "")
+CHANNEL_ID = os.environ.get("TG_CHAT_ID")   or os.environ.get("CHANNEL_ID", "")
 
-def init(**helpers):
-    globals().update(helpers)
+YT_HANDLE   = "https://www.youtube.com/@sunneo"
+YT_RSS_BASE = "https://www.youtube.com/feeds/videos.xml?channel_id="
+YT_THUMB    = "https://i.ytimg.com/vi/{vid}/maxresdefault.jpg"
+SHOW_LINK   = "https://www.sunnxt.com"
 
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
-# ---------------------------------------------------------------
-# SUN NXT SHOWS
-# gid  = show ki ID (sunnxt.com ke show/episode link me .../detail/<NUMBER>/... wala number, aage GID_ lagao)
-# lang = Hindi / Tamil / Telugu / Kannada / Malayalam ...
-# slug_prefix (optional) = link ka shuru ka hissa, jaise "suntv-tamil-serial"
-# ---------------------------------------------------------------
-SUNNXT_SHOWS = [
-    {"name": "Roopmati", "gid": "GID_248627", "lang": "Hindi"},
-    {"name": "Thodi Si Umeed Thoda Sa Aasman", "gid": "GID_255611", "lang": "Hindi"},
-    {"name": "Divya Prem", "gid": "GID_225437", "lang": "Hindi"},
+# weekday: 0=Mon ... 6=Sun
+# keywords: title must contain ALL of at least one keyword group (case-insensitive)
+# ep_keywords: at least one must appear to confirm it's a full episode (not promo/teaser)
+SHOWS = [
+    {
+        "name":        "Divya Prem",
+        "keywords":    ["divya prem"],
+        "ep_words":    ["full episode", "episode", " ep "],
+        "lang":        "Hindi",
+        "days":        [0,1,2,3,4,5,6],
+        "show_url":    "https://www.sunnxt.com/hindi/shows/divya-prem",
+    },
+    {
+        "name":        "Nandini Ka Pratishodh",
+        "keywords":    ["nandini ka pratishodh", "nandini pratishodh"],
+        "ep_words":    ["full episode", "episode", " ep "],
+        "lang":        "Hindi",
+        "days":        [0,1,2,3,4,5,6],
+        "show_url":    "https://www.sunnxt.com/hindi/shows/nandini-ka-pratishodh",
+    },
+    {
+        "name":        "Saajha Sindoor",
+        "keywords":    ["saajha sindoor"],
+        "ep_words":    ["full episode", "episode", " ep "],
+        "lang":        "Hindi",
+        "days":        [0,1,2,3,4,5,6],
+        "show_url":    "https://www.sunnxt.com/hindi/shows/saajha-sindoor",
+    },
+    {
+        "name":        "Ishq Jabaria",
+        "keywords":    ["ishq jabaria"],
+        "ep_words":    ["full episode", "episode", " ep "],
+        "lang":        "Hindi",
+        "days":        [0,1,2,3,4,5,6],
+        "show_url":    "https://www.sunnxt.com/hindi/shows/ishq-jabaria",
+    },
+    {
+        "name":        "Chatthi Maiyya Ki Bitiya",
+        "keywords":    ["chatthi maiyya", "chhathi maiyya"],
+        "ep_words":    ["full episode", "episode", " ep "],
+        "lang":        "Hindi",
+        "days":        [0,1,2,3,4,5,6],
+        "show_url":    "https://www.sunnxt.com/hindi/shows/chatthi-maiyya-ki-bitiya",
+    },
+    {
+        "name":        "Lakshmi Mere Aangan Ki",
+        "keywords":    ["lakshmi mere aangan"],
+        "ep_words":    ["full episode", "episode", " ep "],
+        "lang":        "Hindi",
+        "days":        [0,1,2,3,4,5,6],
+        "show_url":    "https://www.sunnxt.com/hindi/shows/lakshmi-mere-aangan-ki",
+    },
 ]
-# In languages ke home "Fresh Episodes" me jitne bhi shows aate hain, sab apne aap track hote hain
-# (upar ki list me naam na bhi ho). Sirf apni list chahiye toh [] kar do. Tamil/Telugu bhi daal sakte ho.
-SUNNXT_AUTO_LANGS = ["Hindi"]
-SUNNXT_MAX_AGE_DAYS = 3        # isse purane episode ka alert nahi jata
-
-API = "https://pwaapi.sunnxt.com"
-SITE = "https://www.sunnxt.com"
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
-FIELDS = ("contents,user/currentdata,images,generalInfo,relatedCast,"
-          "globalServiceName,globalServiceId,publishingHouse")
-
-_feed_cache = {}
 
 
-def _headers(lang):
-    return {
-        "accept": "*/*",
-        "contentlanguage": (lang or "hindi").lower(),
-        "origin": SITE,
-        "referer": SITE + "/",
-        "user-agent": UA,
-        "x-myplex-maturity-level": "",
-        "x-myplex-platform": "browser",
-        "x-ucv": "7",
-    }
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
+def _ist_now():
+    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
 
-def _between(now):
-    """Site ki tarah is mahine ka range: YYYYDDMMTHHMMSS (din pehle, mahina baad me)."""
-    first = now.replace(day=1)
-    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-
-    def f(d, t):
-        return f"{d.year}{d.day:02d}{d.month:02d}T{t}"
-    return f"{f(first, '000000')}-{f(last, '235900')}"
-
-
-def _get_json(url, lang):
-    r = requests.get(url, headers=_headers(lang), timeout=40)
-    if r.status_code != 200:
-        raise RuntimeError(f"Sun NXT API status {r.status_code}: {r.text[:120]}")
-    return r.json()
-
-
-def fetch_feed(lang):
-    """Home 'Fresh Episodes' (us language ke naye episodes, alag-alag shows ke)."""
-    lang = (lang or "hindi").lower()
-    if lang not in _feed_cache:
-        feed_url = (f"{API}/content/v2/carousel/portalHomeTvshowsLatestEpisodes"
-                    f"?&level=devicemax&startIndex=1&count=30&contentlang={lang}")
-        try:
-            _feed_cache[lang] = (_get_json(feed_url, lang) or {}).get("results") or []
-        except Exception as e:
-            print("  Fresh Episodes error:", e)
-            _feed_cache[lang] = []
-    return _feed_cache[lang]
-
-
-def clean_name(gname):
-    return re.sub(r"\s*-\s*(Hindi|Tamil|Telugu|Kannada|Malayalam|Marathi|Bengali|Bangla)\s*$", "",
-                  gname or "", flags=re.I).strip()
-
-
-def discover_shows(explicit):
-    """Fresh Episodes feed se naye shows (jo upar ki list me nahi hain)."""
-    known = {s["gid"] for s in explicit}
-    found = []
-    for lang in SUNNXT_AUTO_LANGS:
-        for it in fetch_feed(lang):
-            gid = it.get("globalServiceId")
-            if not gid or gid in known:
-                continue
-            known.add(gid)
-            found.append({"name": clean_name(it.get("globalServiceName")) or gid,
-                          "gid": gid, "lang": lang, "auto": True})
-    return found
-
-
-def fetch_show_items(show, now):
-    """Show ke naye episodes (naye pehle). Pehle show-wali API, na chale toh home 'Fresh Episodes'."""
-    if show.get("auto"):
-        return [i for i in fetch_feed(show.get("lang")) if i.get("globalServiceId") == show["gid"]]
-    url = (f"{API}/content/v3/vods/{show['gid']}/?&orderBy=releaseDate&orderMode=-1"
-           f"&fields={FIELDS}&startIndex=1&count=5&betweenDates={_between(now)}")
+def _tg(method, **kw):
     try:
-        items = (_get_json(url, show.get("lang")) or {}).get("results") or []
-        if items:
-            return items
-        print("  show API se episode nahi mile, home Fresh Episodes try")
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+            data={"chat_id": CHANNEL_ID, "parse_mode": "HTML", **kw},
+            timeout=30)
+        return r.ok
     except Exception as e:
-        print("  show API error:", e, "| home Fresh Episodes try")
-    return [i for i in fetch_feed(show.get("lang")) if i.get("globalServiceId") == show["gid"]]
-
-
-def parse_item(item):
-    gi = item.get("generalInfo") or {}
-    disp = gi.get("displayTitle") or ""
-    title = item.get("title") or gi.get("title") or ""
-    m = re.search(r"\bE(\d+)\b", disp)
-    ep_no = int(m.group(1)) if m else None
-    date = None
-    d = re.search(r"([A-Z][a-z]{2}) (\d{1,2}), (\d{4})", disp or title)
-    if d:
-        try:
-            date = datetime.strptime(f"{d.group(1)} {d.group(2)} {d.group(3)}", "%b %d %Y").date()
-        except ValueError:
-            date = None
-    rel = None
-    try:
-        rel = datetime.fromisoformat((item.get("releaseDate") or "").replace("Z", "+00:00"))
-    except ValueError:
-        rel = None
-    if date is None and rel is not None:
-        date = rel.astimezone(IST).date()
-    return {
-        "id": int(item["_id"]),
-        "title": title,
-        "ep_no": ep_no,
-        "date": date,
-        "release": rel,
-        "gname": item.get("globalServiceName") or "",
-        "images": (item.get("images") or {}).get("values") or [],
-    }
-
-
-def pick_poster(values):
-    for typ, res in (("coverposter", "1280x720"), ("coverposter", "960x540"),
-                     ("preview", "832x623"), ("thumbnail", "500x750")):
-        for v in values:
-            if v.get("type") == typ and v.get("resolution") == res and v.get("link"):
-                return v["link"]
-    for v in values:
-        if v.get("link"):
-            return v["link"]
-    return None
-
-
-def episode_link(show, ep):
-    gnum = show["gid"].replace("GID_", "")
-    lang = (show.get("lang") or "Hindi").lower()
-    prefix = show.get("slug_prefix") or f"suntv-{lang}-serial"
-    base = re.sub(r"[^a-z0-9]+", "-", (ep["gname"] or show["name"]).lower()).strip("-")
-    slug = f"{prefix}-{base}"
-    if ep["ep_no"]:
-        slug += f"-episodeno{ep['ep_no']}"
-    if ep["date"]:
-        slug += "-" + ep["date"].strftime("%b%d-%Y")
-    return f"{SITE}/{slug}/detail/{gnum}/{ep['id']}"
-
-
-def caption(show, ep):
-    lines = [
-        "#NewEpisode #DMT #SUNNXT #Notification",
-        "",
-        f"<b>Show Name: {html.escape(show['name'], quote=False)}</b>",
-    ]
-    if ep["ep_no"]:
-        lines.append(f"<b>Episode Number: {ep['ep_no']}</b>")
-    lines += [
-        f"<b>Episode Title: {html.escape(ep['title'], quote=False)}</b>",
-        f"<b>Release Date: {ep['date'].strftime('%d %B %Y') if ep['date'] else ''}</b>",
-        f"<b>Language: {html.escape(show.get('lang') or 'Hindi', quote=False)}</b>",
-        "",
-        "<b>Show Link:</b>",
-        f"<code>{html.escape(episode_link(show, ep), quote=False)}</code>",
-    ]
-    return "\n".join(lines)
-
-
-def poster_bytes(values):
-    url = pick_poster(values)
-    if not url:
-        return None
-    try:
-        r = requests.get(url, headers={"Referer": SITE + "/", "User-Agent": UA}, timeout=30)
-        if r.status_code == 200 and r.content:
-            return r.content
-        print("  poster status:", r.status_code)
-    except requests.RequestException as e:
-        print("  poster error:", e)
-    return None
-
-
-def process_show(show, state, now):
-    items = fetch_show_items(show, now)
-    if not items:
-        print("  koi episode nahi mila")
+        log.warning(f"Telegram {method} error: {e}")
         return False
-    now_utc = now.astimezone(timezone.utc)
-    eps = []
-    for it in items:
-        try:
-            ep = parse_item(it)
-        except Exception as e:
-            print("  episode parse error:", e)
-            continue
-        if ep["release"] is not None and ep["release"] > now_utc:
-            continue                                   # abhi release nahi hua
-        eps.append(ep)
-    eps.sort(key=lambda e: e["id"])
-    if not eps:
-        print("  released episode nahi mila")
-        return True
-    latest = eps[-1]
-    print(f"  latest ep {latest['ep_no']} | {latest['date']} | id {latest['id']}")
 
-    bucket = state.setdefault("sunnxt", {})
-    last = bucket.get(show["gid"])
-    pending = eps[-1:] if last is None else [e for e in eps if e["id"] > int(last)]
+def _send(poster_url, caption):
+    if poster_url:
+        ok = _tg("sendPhoto", photo=poster_url, caption=caption)
+        if ok:
+            return True
+    return _tg("sendMessage", text=caption)
+
+
+# ---------------------------------------------------------------------------
+# YouTube channel ID discovery (auto, cached in state)
+# ---------------------------------------------------------------------------
+
+def _get_yt_channel_id(state):
+    """Fetch Sun Neo YouTube channel ID and cache in state."""
+    cached = state.get("sunnxt_yt_channel_id", "")
+    if cached:
+        return cached
+
+    log.info("[SUNNXT] Fetching Sun Neo YouTube channel ID...")
+    try:
+        r = requests.get(
+            YT_HANDLE,
+            headers={"User-Agent": BROWSER_UA},
+            timeout=15)
+        m = re.search(r'"channelId"\s*:\s*"(UC[A-Za-z0-9_-]{20,})"', r.text)
+        if m:
+            ch_id = m.group(1)
+            state["sunnxt_yt_channel_id"] = ch_id
+            log.info(f"[SUNNXT] Channel ID found: {ch_id}")
+            return ch_id
+    except Exception as e:
+        log.warning(f"[SUNNXT] Channel ID fetch error: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# YouTube RSS feed → today's videos
+# ---------------------------------------------------------------------------
+
+def _fetch_yt_videos(channel_id):
+    """
+    Fetch YouTube RSS feed for channel.
+    Returns list of dicts: {title, video_id, published_ist (date)}
+    """
+    url = YT_RSS_BASE + channel_id
+    try:
+        r = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=20)
+        if r.status_code != 200:
+            log.warning(f"[SUNNXT] YouTube RSS HTTP {r.status_code}")
+            return []
+
+        # Parse XML - handle namespaces
+        ns = {
+            'atom': 'http://www.w3.org/2005/Atom',
+            'yt':   'http://www.youtube.com/xml/schemas/2015',
+        }
+        root = ET.fromstring(r.text)
+        videos = []
+        for entry in root.findall('atom:entry', ns):
+            vid_id = entry.findtext('yt:videoId', namespaces=ns) or ''
+            title  = entry.findtext('atom:title', namespaces=ns) or ''
+            pub    = entry.findtext('atom:published', namespaces=ns) or ''
+            if not vid_id:
+                continue
+            # Parse publish date to IST date
+            try:
+                pub_dt = datetime.datetime.fromisoformat(pub.replace('Z', '+00:00'))
+                pub_ist = (pub_dt + datetime.timedelta(hours=5, minutes=30)).date()
+            except Exception:
+                pub_ist = None
+            videos.append({
+                'title':    title,
+                'video_id': vid_id,
+                'pub_ist':  pub_ist,
+            })
+        log.info(f"[SUNNXT] YouTube RSS: {len(videos)} recent videos fetched")
+        return videos
+    except Exception as e:
+        log.warning(f"[SUNNXT] YouTube RSS error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Match show to today's episode video
+# ---------------------------------------------------------------------------
+
+def _match_episode(show, videos, today_ist):
+    """
+    Find a video published today that matches this show's keywords
+    and contains an episode-indicator word (not just promo/teaser).
+    Returns matched video dict or None.
+    """
+    kw_groups  = show["keywords"]
+    ep_words   = show["ep_words"]
+
+    for video in videos:
+        if video["pub_ist"] != today_ist:
+            continue
+        title_lo = video["title"].lower()
+
+        # Must match at least one keyword group
+        kw_match = any(kw.lower() in title_lo for kw in kw_groups)
+        if not kw_match:
+            continue
+
+        # Must have an episode indicator
+        ep_match = any(ew.lower() in title_lo for ew in ep_words)
+        if not ep_match:
+            continue
+
+        return video
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Caption
+# ---------------------------------------------------------------------------
+
+def _make_caption(show, video, today_ist):
+    date_str = today_ist.strftime("%d %B %Y")
+    url      = show.get("show_url", SHOW_LINK)
+    title    = video.get("title", "")
+    # Try to extract episode number from title e.g. "Ep 45" or "Episode 45"
+    ep_no = ""
+    m = re.search(r'[Ee]p(?:isode)?\s*[#\-]?\s*(\d+)', title)
+    if m:
+        ep_no = m.group(1).zfill(3)
+
+    return (
+        "#NewEpisode #DMT #SUNNXT #Notification\n\n"
+        f"Show Name: {show['name']}\n"
+        + (f"Episode Number: {ep_no}\n" if ep_no else "")
+        + f"Episode Title: {title}\n"
+        f"Release Date: {date_str}\n"
+        f"Language: {show['lang']}\n\n"
+        f"Show Link:\n<code>{url}</code>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def run(state: dict):
+    """Called by bot.py. Returns (ok_count, sunnxt_ok_bool)."""
+    now       = _ist_now()
+    today_str = now.strftime("%Y-%m-%d")
+    today_ist = now.date()
+    weekday   = now.weekday()
+
+    state.setdefault("sunnxt_sent", {})
+
+    ok_count  = sum(1 for s in SHOWS
+                    if weekday in s["days"]
+                    and state["sunnxt_sent"].get(s["name"]) == today_str)
+    sunnxt_ok = ok_count > 0
+
+    pending = [s for s in SHOWS
+               if weekday in s["days"]
+               and state["sunnxt_sent"].get(s["name"]) != today_str]
+
     if not pending:
-        print("  Naya kuch nahi")
-        return True
-    for ep in pending:
-        age = (now.date() - ep["date"]).days if ep["date"] else 0
-        if age > SUNNXT_MAX_AGE_DAYS:
-            bucket[show["gid"]] = ep["id"]
-            save_state(state)
-            print(f"  purana episode ({age} din), alert nahi")
+        log.info("[SUNNXT] All today's shows already sent")
+        return ok_count, sunnxt_ok
+
+    log.info(f"[SUNNXT] {len(pending)} shows pending: {[s['name'] for s in pending]}")
+
+    # Get YouTube channel ID
+    ch_id = _get_yt_channel_id(state)
+    if not ch_id:
+        log.error("[SUNNXT] Could not get YouTube channel ID, skipping")
+        return ok_count, sunnxt_ok
+
+    # Fetch today's videos from RSS
+    videos = _fetch_yt_videos(ch_id)
+    if not videos:
+        log.info("[SUNNXT] No videos from RSS, will retry next run")
+        return ok_count, sunnxt_ok
+
+    # Match and send each pending show
+    for show in pending:
+        name = show["name"]
+        vid  = _match_episode(show, videos, today_ist)
+
+        if not vid:
+            log.info(f"[SUNNXT] {name}: today's episode not on YouTube yet, will retry")
             continue
-        if send_tg(caption(show, ep), poster_bytes(ep["images"])):
-            bucket[show["gid"]] = ep["id"]
-            save_state(state)
-            print(f"  Sent: {show['name']} | {ep['title']}")
+
+        poster  = YT_THUMB.format(vid=vid["video_id"])
+        caption = _make_caption(show, vid, today_ist)
+
+        log.info(f"[SUNNXT] {name}: found '{vid['title']}'")
+        sent = _send(poster, caption)
+
+        if sent:
+            state["sunnxt_sent"][name] = today_str
+            ok_count  += 1
+            sunnxt_ok = True
+            log.info(f"[SUNNXT] SENT: {name}")
         else:
-            return False
-    return True
+            log.error(f"[SUNNXT] FAILED: {name}")
 
-
-def run(state, now=None):
-    """Return: (kitne shows theek chale, kul shows)."""
-    now = now or datetime.now(IST)
-    state.setdefault("sunnxt", {})
-    ok = 0
-    shows = list(SUNNXT_SHOWS) + discover_shows(SUNNXT_SHOWS)
-    for show in shows:
-        print(f"== [SUNNXT] {show['name']}" + (" (auto)" if show.get("auto") else ""))
-        try:
-            if process_show(show, state, now):
-                ok += 1
-        except Exception as e:
-            print("  ERROR:", e)
-    return ok, len(shows)
+    return ok_count, sunnxt_ok
