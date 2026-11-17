@@ -1,5 +1,11 @@
 """
-hotstar_part.py  –  JioHotstar Episode Notifications  (v3 – INSTANT)
+hotstar_part.py  –  JioHotstar Episode Notifications  (v4 – INSTANT + POSTER FIX)
+===================================================================================
+Changes in v4:
+  • Download poster image ourselves (with Hotstar headers) → upload as bytes to Telegram
+    → Telegram's servers no longer need to fetch from Hotstar CDN (was getting blocked)
+  • Show-level poster as fallback when Episode API is blocked
+  • Everything else same as v3
 """
 
 import os, re, datetime, time, logging, requests
@@ -20,6 +26,12 @@ HOTSTAR_HDR = {
     "x-country-code":  "IN",
     "x-platform-code": "WEB",
     "x-app-version":   "6.0.0",
+}
+
+IMG_HDR = {
+    "accept":     "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "referer":    "https://www.hotstar.com/",
+    "user-agent": HOTSTAR_HDR["user-agent"],
 }
 
 IMG_BASE  = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x/"
@@ -45,9 +57,19 @@ def init(**kwargs):
     """bot.py calls this; we use our own HTTP client so nothing to do."""
     pass
 
-def _ist_now():
-    return datetime.datetime.now(
-        datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+def _fetch_image(url):
+    """Download image bytes from Hotstar CDN using proper headers."""
+    if not url:
+        return None
+    try:
+        r = requests.get(url, headers=IMG_HDR, timeout=20)
+        ct = r.headers.get("content-type", "")
+        if r.ok and r.content and "image" in ct:
+            return r.content
+        log.debug(f"Image fetch: HTTP {r.status_code} ct={ct}")
+    except Exception as e:
+        log.debug(f"Image fetch error: {e}")
+    return None
 
 def _tg(method, **kw):
     try:
@@ -56,27 +78,48 @@ def _tg(method, **kw):
             data={"chat_id": CHANNEL_ID, "parse_mode": "HTML", **kw},
             timeout=30)
         if not r.ok:
-            log.warning(f"TG {method}: {r.status_code} {r.text[:80]}")
+            log.warning(f"TG {method}: {r.status_code} {r.text[:120]}")
         return r.ok
     except Exception as e:
         log.warning(f"TG {method}: {e}")
         return False
 
 def _send(poster_url, caption):
-    if poster_url and _tg("sendPhoto", photo=poster_url, caption=caption):
-        return True
+    """Download poster → upload bytes to Telegram (bypasses Hotstar CDN block)."""
+    if poster_url:
+        img = _fetch_image(poster_url)
+        if img:
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                    data={"chat_id": CHANNEL_ID, "caption": caption, "parse_mode": "HTML"},
+                    files={"photo": ("poster.jpg", img, "image/jpeg")},
+                    timeout=60)
+                if r.ok:
+                    log.info("[HOTSTAR] Poster uploaded successfully")
+                    return True
+                log.warning(f"TG sendPhoto upload: {r.status_code} {r.text[:80]}")
+            except Exception as e:
+                log.warning(f"TG sendPhoto upload error: {e}")
+        # Fallback: try URL directly
+        if _tg("sendPhoto", photo=poster_url, caption=caption):
+            return True
     return _tg("sendMessage", text=caption)
 
-def _show_api_latest_bcast(show_id):
+def _show_api_data(show_id):
+    """Returns (latestEpisodeBroadcastDate, show_poster_url)."""
     try:
         r = requests.get(
             f"https://api.hotstar.com/o/v2/content/{show_id}?type=SHOW&tas=5",
             headers=HOTSTAR_HDR, timeout=10)
         if r.status_code == 200:
-            return r.json()["body"]["results"]["item"].get("latestEpisodeBroadcastDate")
+            item   = r.json()["body"]["results"]["item"]
+            bcast  = item.get("latestEpisodeBroadcastDate")
+            poster = _poster(item)
+            return bcast, poster
     except Exception as e:
         log.debug(f"ShowAPI {show_id}: {e}")
-    return None
+    return None, None
 
 def _scan_sitemaps_for_shows(show_ids):
     results = {sid: [] for sid in show_ids}
@@ -119,6 +162,7 @@ def _episode_info(ep_id):
                 return r.json()["body"]["results"]["item"]
             if r.status_code in (429, 503):
                 time.sleep(3); continue
+            log.debug(f"EpAPI {ep_id}: HTTP {r.status_code}")
             break
         except Exception as e:
             log.debug(f"EpAPI {ep_id}: {e}"); break
@@ -128,12 +172,21 @@ def _poster(item):
     for img in item.get("imageSets") or []:
         t = str(img.get("imageType", "")).upper()
         u = img.get("publicUri", "")
-        if u and ("EPISODE" in t or "THUMBNAIL" in t):
+        if u and ("EPISODE" in t or "THUMBNAIL" in t or "LANDSCAPE" in t):
             return IMG_BASE + u
     for img in item.get("imageSets") or []:
         u = img.get("publicUri", "")
-        if u: return IMG_BASE + u
+        if u:
+            return IMG_BASE + u
+    for key in ("poster", "landscapeImg", "squareImg", "coverImg", "imageUri", "imgUri"):
+        u = item.get(key, "")
+        if u:
+            return u if u.startswith("http") else IMG_BASE + u
     return None
+
+def _ist_now():
+    return datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
 
 def _ep_num_from_slug(slug):
     m = re.search(r"(?:ep(?:isode)?[-_\s]*)(\d{1,4})", slug, re.I)
@@ -186,13 +239,18 @@ def run(state: dict):
     if not todays_shows:
         log.info("[HOTSTAR] No shows scheduled today")
         return 0, False
+
     need_sitemap = []
     skip_api     = []
+    show_posters = {}
+
     for show in todays_shows:
         name    = show["name"]
         show_id = show["show_id"]
         last    = state["hs_last_ep"].get(name, {})
-        bcast   = _show_api_latest_bcast(show_id)
+        bcast, show_poster = _show_api_data(show_id)
+        if show_poster:
+            show_posters[show_id] = show_poster
         if bcast is None:
             log.info(f"[HOTSTAR] {name}: Show API unavailable -> sitemap fallback")
             skip_api.append(show)
@@ -203,23 +261,28 @@ def run(state: dict):
                 need_sitemap.append(show)
             else:
                 log.info(f"[HOTSTAR] {name}: no new episode")
+
     to_scan = need_sitemap + skip_api
     if not to_scan:
         log.info("[HOTSTAR] All shows up to date")
         return ok_count, hotstar_ok
+
     scan_ids   = [s["show_id"] for s in to_scan]
     cache      = state["hs_cache"]
     cache_time = cache.get("_ts", 0)
     now_ts     = now.timestamp()
+
     if (now_ts - cache_time) > 1200 or not all(sid in cache for sid in scan_ids):
         log.info(f"[HOTSTAR] Scanning sitemaps for {len(scan_ids)} shows ...")
         ep_map = _scan_sitemaps_for_shows(scan_ids)
         cache.update(ep_map)
         cache["_ts"] = now_ts
         state["hs_cache"] = cache
+        log.info("[HOTSTAR] Sitemap scan complete")
     else:
         ep_map = cache
         log.info("[HOTSTAR] Using cached sitemap data")
+
     for show in to_scan:
         name    = show["name"]
         show_id = show["show_id"]
@@ -246,11 +309,12 @@ def run(state: dict):
                 "bcast":     ep_bcast,
                 "season_no": season.get("number", ""),
             }
-            poster  = _poster(item)
+            poster  = _poster(item) or show_posters.get(show_id)
             caption = _caption_rich(show, ep_data)
+            log.info(f"[HOTSTAR] {name}: Ep#{ep_data['ep_no']} | poster={'YES' if poster else 'NO'}")
         else:
-            log.warning(f"[HOTSTAR] {name}: Episode API blocked -> fallback")
-            poster   = None
+            log.warning(f"[HOTSTAR] {name}: Episode API blocked -> using show poster")
+            poster   = show_posters.get(show_id)
             ep_bcast = 0
             caption  = _caption_fallback(show, ep_slug)
         sent = _send(poster, caption)
@@ -261,4 +325,5 @@ def run(state: dict):
             log.info(f"[HOTSTAR] SENT: {name}")
         else:
             log.error(f"[HOTSTAR] FAILED: {name}")
+
     return ok_count, hotstar_ok
