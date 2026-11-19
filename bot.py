@@ -60,7 +60,7 @@ ZEE5_SHOWS = [
     {"name": "Vasudha", "id": "0-6-4z5612471", "slug": "vasudha"},
     {"name": "Sach Subhash Chandra Show", "id": "0-6-4z5865856", "slug": "sach-subhash-chandra-show"},
     {"name": "Dilo Ki Ram Leela", "id": "0-6-4z51028474", "slug": "dilo-ki-ram-leela"},
-    {"name": "Sa Re Ga Ma Pa", "id": "0-6-4z51079670", "slung": "sa-re-ga-ma-pa-2026"},
+    {"name": "Sa Re Ga Ma Pa", "id": "0-6-4z51079670", "slug": "sa-re-ga-ma-pa-2026"},
     {"name": "Jagadhatri", "id": "0-6-4z5853175", "slug": "jagadhatri"},
 ]
 ZEE5_PAGE = "https://www.zee5.com/tv-shows/details/{slug}/{id}"
@@ -160,7 +160,7 @@ def avail_time(m):
 
 
 def episode_link(show, m):
-    title = re.sub(r"['\u2019`]", "", m.get("episodeTitle", "").lower())
+    title = re.sub(r"['`\u2019]", "", m.get("episodeTitle", "").lower())
     slug = re.sub(r"[^a-z0-9]+", "-", title).strip("-")
     return (
         f"https://www.sonyliv.com/shows/{show['slug']}-{show['id']}/"
@@ -387,10 +387,8 @@ DANGAL_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 )
-# Dangal Play ki website ke apne JS wale constants. Site inhe badle toh decrypt fail hoga.
 DANGAL_KEY = b"89H49I12T20E542N17D4E5A47R184LKL"
 DANGAL_IV = b"0543737198408118"
-# Guest token lene ke liye site ke JS me hardcoded app-authorization (HAR sanitize me ye header hat jata hai)
 DANGAL_APP_AUTH = "abd07061a3dd9851e3c9dd551e68e2688c5500a5139a561299a4ffbe40584f233f41d2b974b99122998fad15277a03408953d6e36ee6bbe9186b5cfb2a291f230a926bfef04810c774e7de5e94c5bf5f"
 
 
@@ -454,7 +452,6 @@ def dangal_released(ep):
 
 
 def dangal_newest_season_id(seasons):
-    """Season title 'Ep 61-90' jaisa hota hai: jiska upper number sabse bada, wahi sabse naya."""
     best, best_n = seasons[0]["seasonID"], -1
     for s in seasons:
         nums = [int(x) for x in re.findall(r"\d+", s.get("seasonTitle", ""))]
@@ -476,7 +473,6 @@ def dangal_latest_episodes(series_id, token):
     eps = page.get("content", [])
     total = int(page.get("totalCount") or len(eps))
     if total > len(eps) and len(eps) > 1 and int(eps[0]["id"]) < int(eps[-1]["id"]):
-        # list purane->naye order me aayi, toh sabse naye episodes aakhri page pe hote hain
         eps = dangal_api_get(f"{base}/offset/{total - 10}", token).get("content", [])
     eps = [e for e in eps if e.get("contentType") == "video" and dangal_released(e)]
     return sorted(eps, key=lambda e: int(e["id"]))
@@ -582,6 +578,11 @@ def load_state():
     state.setdefault("timed", {})
     state.setdefault("hotstar", {})
     state.setdefault("timed_ep", {})
+    state.setdefault("hs_sent", {})
+    state.setdefault("hs_cache", {})
+    state.setdefault("yt_sent", {})
+    state.setdefault("yt_channel_ids", {})
+    state.setdefault("sunnxt_sent", {})
     return state
 
 
@@ -668,7 +669,7 @@ def process_dangal_show(show, state, token):
     key = str(series_id)
     rec = state["dangal"].get(key)
     if rec is None:
-        pending = eps[-1:]          # pehli baar: sirf sabse naya episode
+        pending = eps[-1:]
     else:
         last = int(rec.get("last_id", 0))
         pending = [e for e in eps if int(e["id"]) > last]
@@ -694,7 +695,9 @@ def main():
     state = load_state()
     now = datetime.now(timezone.utc)
     ok = 0
-    sony_ok = zee_ok = dang_ok = hs_ok = 0
+    sony_ok = zee_ok = dang_ok = hs_ok = yt_ok = sn_ok = 0
+
+    # --- SonyLIV ---
     for show in SHOWS:
         print(f"== {show['name']}")
         try:
@@ -703,6 +706,8 @@ def main():
                 sony_ok += 1
         except Exception as e:
             print("  ERROR:", e)
+
+    # --- ZEE5 ---
     for show in ZEE5_SHOWS:
         print(f"== [ZEE5] {show['name']}")
         try:
@@ -711,6 +716,8 @@ def main():
                 zee_ok += 1
         except Exception as e:
             print("  ERROR:", e)
+
+    # --- Dangal Play ---
     if DANGAL_SHOWS:
         if not HAS_CRYPTO:
             print("== [DANGAL] 'cryptography' install nahi hai, Dangal skip "
@@ -730,8 +737,8 @@ def main():
                             dang_ok += 1
                     except Exception as e:
                         print("  ERROR:", e)
-    # JioHotstar alag file (hotstar_part.py) me hai. Wo toote ya Hotstar block kare,
-    # tab bhi upar ke SonyLIV / ZEE5 / Dangal pe koi asar nahi padta.
+
+    # --- JioHotstar ---
     try:
         import hotstar_part
         hotstar_part.init(
@@ -740,13 +747,34 @@ def main():
         )
         h_ok, hs_ok = hotstar_part.run(state)
         ok += h_ok
-    except Exception as e:   # SyntaxError / IndentationError bhi yahin pakde jate hain
+    except Exception as e:
         print("== [HOTSTAR] hotstar_part.py chala nahi (baaki OTTs theek chal rahe hain):", repr(e))
+
+    # --- YouTube Channels ---
+    try:
+        import youtube_part
+        y_ok, yt_ok = youtube_part.run(state)
+        ok += y_ok
+    except Exception as e:
+        print("== [YOUTUBE] youtube_part.py chala nahi:", repr(e))
+
+    # --- SunNXT Hindi Shows ---
+    try:
+        import sunnxt_part
+        s_ok, sn_ok = sunnxt_part.run(state)
+        ok += s_ok
+    except Exception as e:
+        print("== [SUNNXT] sunnxt_part.py chala nahi:", repr(e))
+
+    # --- Summary ---
     print("=== SUMMARY (kaun kitna theek chala) ===")
     print(f"SonyLIV : {sony_ok}/{len(SHOWS)} shows")
     print(f"ZEE5    : {zee_ok}/{len(ZEE5_SHOWS)} shows")
     print(f"Dangal  : {dang_ok}/{len(DANGAL_SHOWS)} shows")
     print(f"Hotstar : {'theek chala' if hs_ok else 'NAHI chala / block'}")
+    print(f"YouTube : {'theek chala' if yt_ok else 'NAHI chala / koi video nahi'}")
+    print(f"SunNXT  : {'theek chala' if sn_ok else 'NAHI chala / koi episode nahi'}")
+
     save_state(state)
     if ok == 0:
         print("Koi bhi show kaam nahi kiya")
