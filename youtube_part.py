@@ -1,12 +1,12 @@
 """
-youtube_part.py - YouTube Channel New Video Notifications  (v2)
+youtube_part.py - YouTube Channel New Video Notifications  (v3)
 ================================================================
-Fixes in v2:
-  1. Crazy XYZ channel_id hardcoded (auto-detect was failing)
-  2. Video duration added via noembed.com (free, no API key)
-  3. Video description added (first 200 chars from noembed)
-  4. Tracking by video_id (not just date) → no duplicate, no miss
-  5. Sends every new video (not just one per day)
+Fixes in v3:
+  1. Crazy XYZ correct channel ID (was wrong in v2)
+  2. Migration fix: date-string -> list; old videos marked seen WITHOUT re-sending
+  3. All 10 channels added with hardcoded UC IDs
+  4. Duration + Description via YouTube page scrape
+  5. Per-video tracking (not date-based)
 """
 
 import os, re, datetime, requests, logging
@@ -20,7 +20,6 @@ CHANNEL_ID = os.environ.get("TG_CHAT_ID")   or os.environ.get("CHANNEL_ID", "")
 YT_RSS_BASE = "https://www.youtube.com/feeds/videos.xml?channel_id="
 YT_VIDEO    = "https://youtu.be/{vid}"
 YT_THUMB    = "https://i.ytimg.com/vi/{vid}/maxresdefault.jpg"
-NOEMBED_URL = "https://noembed.com/embed?url=https://www.youtube.com/watch?v={vid}"
 
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -29,7 +28,7 @@ BROWSER_UA = (
 )
 
 # ---------------------------------------------------------------------------
-# YouTube Channels to Track
+# YouTube Channels to Track  (all UC IDs hardcoded)
 # ---------------------------------------------------------------------------
 YT_CHANNELS = [
     {
@@ -40,17 +39,64 @@ YT_CHANNELS = [
     },
     {
         "name":       "Crazy XYZ",
-        "channel_id": "UCwKOaKMoiAFbqlc_hBqRGew",   # ✅ hardcoded - fixed
+        "channel_id": "UCebC4x5l2-PQxg46Ucv9CsA",   # ✅ corrected
         "handle":     "CrazyXYZ",
         "hashtag":    "#CrazyXYZ",
     },
+    {
+        "name":       "The Experiment TV",
+        "channel_id": "UC2CBHC5hi5gwlL9gUUYakDw",
+        "handle":     "TheExperimentTv",
+        "hashtag":    "#TheExperimentTV",
+    },
+    {
+        "name":       "Experiment King",
+        "channel_id": "UCmDC4D2f3Ux1vEwCdmPCplA",
+        "handle":     "Experiment__King",
+        "hashtag":    "#ExperimentKing",
+    },
+    {
+        "name":       "Amit XYZ",
+        "channel_id": "UCfIpZ2GsJc8nf94udbaSOpg",
+        "handle":     "AmitXYZ",
+        "hashtag":    "#AmitXYZ",
+    },
+    {
+        "name":       "MR. INDIAN HACKER Vlogs",
+        "channel_id": "UCOcD_2N04_XS6XgImIWcR1Q",
+        "handle":     "mrindianhackervlogs",
+        "hashtag":    "#MrIndianHackerVlogs",
+    },
+    {
+        "name":       "Mr Sonu Bhai 2.0",
+        "channel_id": "",                              # auto-detect from handle
+        "handle":     "OfficialMrSonuBhaii2.0",
+        "hashtag":    "#MrSonuBhai",
+    },
+    {
+        "name":       "Nishu Tiwari",
+        "channel_id": "UC5aKead6Q8YQYjceizxJIuw",
+        "handle":     "inishutiwari",
+        "hashtag":    "#NishuTiwari",
+    },
+    {
+        "name":       "Techno Gamerz",
+        "channel_id": "UCX8pnu3DYUnx8qy8V_c6oHg",
+        "handle":     "TechnoGamerzOfficial",
+        "hashtag":    "#TechnoGamerz",
+    },
+    {
+        "name":       "Sourav Joshi Vlogs",
+        "channel_id": "UCjvgGbPP-_lZ4x8Wv85n89Q",
+        "handle":     "souravjvlogs",
+        "hashtag":    "#SouravJoshiVlogs",
+    },
 ]
 
-# Max videos to send per channel per run (avoid spam on first run)
+# Max videos to send per channel per run (avoid spam)
 MAX_PER_RUN = 2
-
-# How many recent video IDs to remember per channel
-MAX_SEEN    = 30
+# Max seen IDs to remember per channel
+MAX_SEEN    = 40
 
 
 # ---------------------------------------------------------------------------
@@ -75,95 +121,109 @@ def _tg(method, **kw):
 
 def _send(poster_url, caption):
     if poster_url:
-        # Try maxresdefault, fall back to hqdefault if 404
         ok = _tg("sendPhoto", photo=poster_url, caption=caption)
         if ok:
             return True
+        # Try hqdefault if maxresdefault fails
         hq = poster_url.replace("maxresdefault", "hqdefault")
-        ok = _tg("sendPhoto", photo=hq, caption=caption)
-        if ok:
-            return True
+        if hq != poster_url:
+            ok = _tg("sendPhoto", photo=hq, caption=caption)
+            if ok:
+                return True
     return _tg("sendMessage", text=caption)
 
 
 # ---------------------------------------------------------------------------
-# noembed – get duration + description (free, no API key)
+# Channel ID auto-detection (for channels without hardcoded ID)
+# ---------------------------------------------------------------------------
+
+def _detect_channel_id(handle, state):
+    cache = state.setdefault("yt_channel_ids", {})
+    if cache.get(handle):
+        return cache[handle]
+
+    log.info(f"[YOUTUBE] Auto-detecting channel ID for @{handle}...")
+    try:
+        r = requests.get(
+            f"https://www.youtube.com/@{handle}",
+            headers={"User-Agent": BROWSER_UA},
+            timeout=15)
+        m = re.search(r'"channelId"\s*:\s*"(UC[A-Za-z0-9_-]{20,})"', r.text)
+        if m:
+            ch_id = m.group(1)
+            cache[handle] = ch_id
+            log.info(f"[YOUTUBE] @{handle} → {ch_id}")
+            return ch_id
+    except Exception as e:
+        log.warning(f"[YOUTUBE] Channel ID detect error @{handle}: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Video metadata: duration + description
 # ---------------------------------------------------------------------------
 
 def _get_video_meta(vid):
     """
-    Fetch video duration and description via noembed.com.
-    Returns (duration_str, description_snippet)
-    duration_str like "12:34" or "" if unavailable.
+    Scrape YouTube watch page for duration and description.
+    Returns (duration_str, desc_snippet)  e.g. ("18:42", "Aaj maine...")
     """
     duration_str = ""
     desc_snippet = ""
     try:
         r = requests.get(
-            NOEMBED_URL.format(vid=vid),
-            headers={"User-Agent": BROWSER_UA},
-            timeout=10)
-        if r.ok:
-            data = r.json()
-            # noembed gives title, author but NOT duration/description
-            # So we also try YouTube oEmbed + page scrape for duration
-    except Exception:
-        pass
-
-    # Try YouTube watch page for duration meta tag
-    try:
-        r = requests.get(
             f"https://www.youtube.com/watch?v={vid}",
             headers={"User-Agent": BROWSER_UA},
             timeout=15)
-        if r.ok:
-            # Duration from meta
-            m = re.search(r'"lengthSeconds"\s*:\s*"(\d+)"', r.text)
-            if not m:
-                m = re.search(r'"approxDurationMs"\s*:\s*"(\d+)"', r.text)
-                if m:
-                    secs = int(m.group(1)) // 1000
-                else:
-                    secs = 0
-            else:
-                secs = int(m.group(1))
+        if not r.ok:
+            return "", ""
+        text = r.text
 
-            if secs > 0:
-                h, rem = divmod(secs, 3600)
-                mn, s  = divmod(rem, 60)
-                if h:
-                    duration_str = f"{h}:{mn:02d}:{s:02d}"
-                else:
-                    duration_str = f"{mn}:{s:02d}"
+        # Duration
+        m = re.search(r'"lengthSeconds"\s*:\s*"(\d+)"', text)
+        if m:
+            secs = int(m.group(1))
+        else:
+            m2 = re.search(r'"approxDurationMs"\s*:\s*"(\d+)"', text)
+            secs = int(m2.group(1)) // 1000 if m2 else 0
 
-            # Description snippet
-            m2 = re.search(r'"shortDescription"\s*:\s*"(.*?)"(?=\s*,\s*"[a-z])', r.text, re.S)
-            if m2:
-                raw = m2.group(1)
+        if secs > 0:
+            h, rem = divmod(secs, 3600)
+            mn, s  = divmod(rem, 60)
+            duration_str = f"{h}:{mn:02d}:{s:02d}" if h else f"{mn}:{s:02d}"
+
+        # Description
+        m3 = re.search(r'"shortDescription"\s*:\s*"(.*?)"(?=\s*,\s*"[a-z])', text, re.S)
+        if m3:
+            raw = m3.group(1)
+            try:
                 raw = raw.encode('utf-8').decode('unicode_escape', errors='replace')
-                raw = raw.replace('\\n', ' ').replace('\\t', ' ')
-                raw = re.sub(r'\s+', ' ', raw).strip()
-                desc_snippet = raw[:200] + ("…" if len(raw) > 200 else "")
+            except Exception:
+                pass
+            raw = raw.replace('\\n', ' ').replace('\\t', ' ').replace('\\"', '"')
+            raw = re.sub(r'\s+', ' ', raw).strip()
+            desc_snippet = raw[:220] + ("…" if len(raw) > 220 else "")
 
     except Exception as e:
-        log.debug(f"Video meta fetch {vid}: {e}")
+        log.debug(f"Video meta {vid}: {e}")
 
     return duration_str, desc_snippet
 
 
 # ---------------------------------------------------------------------------
-# YouTube RSS feed fetch
+# YouTube RSS feed
 # ---------------------------------------------------------------------------
 
 def _fetch_videos(channel_id):
     """
-    Fetch latest videos from YouTube RSS.
-    Returns list of dicts: {title, vid, pub_ist (date), pub_ts (timestamp)}
+    Returns list of dicts: {title, vid, pub_ist, pub_ts}
     Sorted newest first.
     """
-    url = YT_RSS_BASE + channel_id
     try:
-        r = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=20)
+        r = requests.get(
+            YT_RSS_BASE + channel_id,
+            headers={"User-Agent": BROWSER_UA},
+            timeout=20)
         if r.status_code != 200:
             log.warning(f"[YOUTUBE] RSS HTTP {r.status_code} for {channel_id}")
             return []
@@ -172,31 +232,26 @@ def _fetch_videos(channel_id):
             'atom': 'http://www.w3.org/2005/Atom',
             'yt':   'http://www.youtube.com/xml/schemas/2015',
         }
+        IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
         root   = ET.fromstring(r.text)
         videos = []
 
         for entry in root.findall('atom:entry', ns):
-            vid_id = entry.findtext('yt:videoId', namespaces=ns) or ''
-            title  = entry.findtext('atom:title',  namespaces=ns) or ''
-            pub    = entry.findtext('atom:published', namespaces=ns) or ''
-            if not vid_id:
+            vid   = entry.findtext('yt:videoId',    namespaces=ns) or ''
+            title = entry.findtext('atom:title',    namespaces=ns) or ''
+            pub   = entry.findtext('atom:published', namespaces=ns) or ''
+            if not vid:
                 continue
             try:
                 pub_dt  = datetime.datetime.fromisoformat(pub.replace('Z', '+00:00'))
-                pub_ist = (pub_dt.astimezone(
-                    datetime.timezone(datetime.timedelta(hours=5, minutes=30)))).date()
+                pub_ist = pub_dt.astimezone(IST).date()
                 pub_ts  = pub_dt.timestamp()
             except Exception:
                 pub_ist = None
                 pub_ts  = 0
-            videos.append({
-                'title':   title,
-                'vid':     vid_id,
-                'pub_ist': pub_ist,
-                'pub_ts':  pub_ts,
-            })
+            videos.append({'title': title, 'vid': vid,
+                           'pub_ist': pub_ist, 'pub_ts': pub_ts})
 
-        # Sort newest first
         videos.sort(key=lambda x: x['pub_ts'], reverse=True)
         return videos
 
@@ -210,33 +265,34 @@ def _fetch_videos(channel_id):
 # ---------------------------------------------------------------------------
 
 def _make_caption(ch, video, duration_str, desc_snippet):
-    date_str  = video['pub_ist'].strftime("%d %B %Y") if video['pub_ist'] else _ist_now().strftime("%d %B %Y")
-    video_url = YT_VIDEO.format(vid=video['vid'])
-    hashtag   = ch.get("hashtag", "#YouTube")
+    date_str = (video['pub_ist'].strftime("%d %B %Y")
+                if video['pub_ist'] else _ist_now().strftime("%d %B %Y"))
+    url      = YT_VIDEO.format(vid=video['vid'])
+    hashtag  = ch.get("hashtag", "#YouTube")
 
-    lines = [
+    parts = [
         f"#NewVideo #DMT {hashtag} #Notification\n",
         f"Channel: {ch['name']}",
         f"Title: {video['title']}",
         f"Date: {date_str}",
     ]
     if duration_str:
-        lines.append(f"Duration: {duration_str}")
+        parts.append(f"Duration: {duration_str}")
     if desc_snippet:
-        lines.append(f"\nDescription:\n{desc_snippet}")
-    lines.append(f"\nWatch Now:\n<code>{video_url}</code>")
+        parts.append(f"\nDescription:\n{desc_snippet}")
+    parts.append(f"\nWatch Now:\n<code>{url}</code>")
 
-    return "\n".join(lines)
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Main
 # ---------------------------------------------------------------------------
 
 def run(state: dict):
     """Called by bot.py. Returns (ok_count, yt_ok_bool)."""
-    state.setdefault("yt_sent",        {})   # {channel_name: [vid_id, ...]}
-    state.setdefault("yt_channel_ids", {})   # handle -> UC... (cache)
+    state.setdefault("yt_sent",        {})
+    state.setdefault("yt_channel_ids", {})
 
     ok_count = 0
     yt_ok    = False
@@ -249,22 +305,40 @@ def run(state: dict):
         # Resolve channel ID
         ch_id = ch.get("channel_id", "")
         if not ch_id:
-            # Try cached auto-detect
             ch_id = state["yt_channel_ids"].get(ch["handle"], "")
+        if not ch_id:
+            ch_id = _detect_channel_id(ch["handle"], state)
         if not ch_id:
             log.warning(f"[YOUTUBE] {name}: no channel ID, skipping")
             continue
 
-        # Seen video IDs for this channel
-        seen = state["yt_sent"].get(name, [])
-        if isinstance(seen, str):
-            seen = []   # migrate old date-based tracking
-
-        # Fetch RSS
-        videos = _fetch_videos(ch_id)
-        if not videos:
-            log.info(f"[YOUTUBE] {name}: no videos from RSS")
-            continue
+        # --- Migration: old date-string → new list ---
+        raw_seen = state["yt_sent"].get(name, [])
+        if isinstance(raw_seen, str):
+            # Old format was "YYYY-MM-DD" (date of last sent)
+            old_date_str = raw_seen          # e.g. "2026-11-20"
+            log.info(f"[YOUTUBE] {name}: migrating old tracking (date={old_date_str})")
+            # Fetch RSS and silently mark all videos up to old_date as seen
+            all_vids = _fetch_videos(ch_id)
+            seen = []
+            for v in all_vids:
+                if v["pub_ist"] and str(v["pub_ist"]) <= old_date_str:
+                    seen.append(v["vid"])    # mark as seen WITHOUT sending
+            state["yt_sent"][name] = seen
+            log.info(f"[YOUTUBE] {name}: migration done, {len(seen)} videos marked seen")
+            # After migration, check if there are truly new videos (after old_date)
+            new_after_migration = [v for v in all_vids if v["vid"] not in seen]
+            if not new_after_migration:
+                log.info(f"[YOUTUBE] {name}: no new videos since migration date")
+                continue
+            # Process new videos below
+            videos = all_vids
+        else:
+            seen   = list(raw_seen)
+            videos = _fetch_videos(ch_id)
+            if not videos:
+                log.info(f"[YOUTUBE] {name}: no videos from RSS")
+                continue
 
         # Find unseen videos
         new_vids = [v for v in videos if v["vid"] not in seen]
@@ -274,30 +348,26 @@ def run(state: dict):
 
         log.info(f"[YOUTUBE] {name}: {len(new_vids)} new video(s)")
 
-        sent_this_run = 0
+        sent_count = 0
         for video in new_vids:
-            if sent_this_run >= MAX_PER_RUN:
+            if sent_count >= MAX_PER_RUN:
                 break
 
-            log.info(f"[YOUTUBE] {name}: sending → '{video['title']}'")
-
-            # Get duration + description
+            log.info(f"[YOUTUBE] {name}: → '{video['title']}'")
             duration_str, desc_snippet = _get_video_meta(video["vid"])
-
             poster  = YT_THUMB.format(vid=video["vid"])
             caption = _make_caption(ch, video, duration_str, desc_snippet)
 
-            sent = _send(poster, caption)
-            if sent:
+            if _send(poster, caption):
                 seen.append(video["vid"])
-                ok_count += 1
-                yt_ok     = True
-                sent_this_run += 1
+                ok_count  += 1
+                yt_ok      = True
+                sent_count += 1
                 log.info(f"[YOUTUBE] ✅ SENT: {name} → {video['vid']}")
             else:
                 log.error(f"[YOUTUBE] ❌ FAILED: {name}")
 
-        # Trim seen list (keep last MAX_SEEN only)
+        # Save updated seen list (keep last MAX_SEEN)
         state["yt_sent"][name] = seen[-MAX_SEEN:]
 
     return ok_count, yt_ok
