@@ -215,10 +215,10 @@
       "last_id": 263166
     },
     "386": {
-      "last_id": 263161
+      "last_id": 263172
     },
     "1741": {
-      "last_id": 263162
+      "last_id": 263174
     },
     "634": {
       "last_id": 262379
@@ -1233,8 +1233,16 @@
         "captain-arti-caught-in-the-crossfire"
       ],
       [
-        1271702373,
-        "bbhin-day-73-game-on-for-captaincy-daawedari"
+        1271702375,
+        "bbhin-day-75-who-s-the-ration-chor"
+      ],
+      [
+        1271702374,
+        "bbhin-day-74-immunity-with-a-twist"
+      ],
+      [
+        1271702372,
+        "bbhin-day-72-the-post-nomination-chaos"
       ],
       [
         1271702371,
@@ -1951,8 +1959,8 @@
     ],
     "1271650854": [
       [
-        1641041837,
-        "saumya-seeks-sanjeev-s-help"
+        1641042037,
+        "echoes-of-jeet-s-childhood-pain"
       ],
       [
         1641041732,
@@ -4405,12 +4413,20 @@
         "rahi-avoids-prem-s-queries"
       ],
       [
-        1641041672,
-        "anupama-faces-family-accusations"
+        1641041995,
+        "anupama-s-fight-for-justice"
+      ],
+      [
+        1641041796,
+        "ranvijay-s-heinous-move"
       ],
       [
         1641041555,
         "anupama-stands-up-for-kinjal"
+      ],
+      [
+        1641041449,
+        "pari-misunderstands-kinjal"
       ],
       [
         1641041338,
@@ -8069,10 +8085,6 @@
         "anupama-braves-against-the-mehtas"
       ],
       [
-        1000281472,
-        "dimple-anupama-fight-for-justice"
-      ],
-      [
         1000281456,
         "anupama-gets-a-lead"
       ],
@@ -8211,6 +8223,10 @@
       [
         1000280916,
         "vanraj-banishes-pakhi"
+      ],
+      [
+        1000280902,
+        "the-wrath-of-vanraj"
       ],
       [
         1000280890,
@@ -11007,6 +11023,14 @@
         "rakshit-s-return-shocks-the-family"
       ],
       [
+        1641042046,
+        "rakshit-refuses-to-forgive-sudha"
+      ],
+      [
+        1641041839,
+        "aradhya-pays-for-her-misdeeds"
+      ],
+      [
         1641041722,
         "rohan-exposes-aradhya-s-truth"
       ],
@@ -11749,6 +11773,10 @@
     ],
     "1271463159": [
       [
+        1641042018,
+        "gulaab-appoints-a-new-contractor"
+      ],
+      [
         1641041812,
         "heer-longs-for-nawab-s-return"
       ],
@@ -11763,14 +11791,6 @@
       [
         1641041468,
         "heer-accuses-nawab"
-      ],
-      [
-        1641041396,
-        "nawab-discovers-heer-s-truth"
-      ],
-      [
-        1641041262,
-        "gulaab-s-cruel-plot-stuns-heer"
       ],
       [
         1641041144,
@@ -13176,8 +13196,12 @@
     "1260161865": [],
     "1271522330": [
       [
-        1641041702,
-        "aarambhi-thanks-dhruv"
+        1641042011,
+        "aarambhi-takes-a-bold-stand"
+      ],
+      [
+        1641041563,
+        "arambhi-protects-saniya-s-future"
       ],
       [
         1641041465,
@@ -14224,6 +14248,10 @@
       [
         1641041694,
         "mannat-stands-tall-at-oberoi-party"
+      ],
+      [
+        1641041610,
+        "mannat-senses-the-oberois-deceit"
       ],
       [
         1641041472,
@@ -16532,6 +16560,10 @@
     ],
     "1271666144": [
       [
+        1641041809,
+        "saanvi-returns-to-the-brar-house"
+      ],
+      [
         1641041673,
         "saanvi-s-sweet-gesture-for-aditya"
       ],
@@ -17041,12 +17073,12 @@
         "delhi-the-auditions-continue"
       ],
       [
-        1641041297,
-        "blasts-from-the-past"
+        1641041951,
+        "move-masti-and-manipulation"
       ],
       [
-        1641041199,
-        "nostalgia-much"
+        1641041297,
+        "blasts-from-the-past"
       ],
       [
         1641040487,
@@ -17235,6 +17267,10 @@
         "team-munawar-vs-team-sonali"
       ],
       [
+        1271720191,
+        "diwali-party-with-avinash-and-eisha"
+      ],
+      [
         1271720187,
         "pyaar-wali-diwali"
       ],
@@ -17394,7 +17430,7 @@
       "bcast": 0
     },
     "Yeh Fitoor Tera": {
-      "ep_id": 1641041920,
+      "ep_id": 1641042037,
       "bcast": 0
     },
     "Anupama": {
@@ -17406,11 +17442,11 @@
       "bcast": 0
     },
     "Tuu Juliet Jatt Di": {
-      "ep_id": 1641041914,
+      "ep_id": 1641042018,
       "bcast": 0
     },
     "Dr. Aarambhi": {
-      "ep_id": 1641041912,
+      "ep_id": 1641042011,
       "bcast": 0
     },
     "Mannat Har Khushi Paane Ki": {
@@ -17502,7 +17538,8 @@
       "PGw8V1I6dTU",
       "EkzWK-ccCLw",
       "3hZBc9vbc98",
-      "7H9msb7IoDM"
+      "7H9msb7IoDM",
+      "IyZsjm9pc_o"
     ],
     "Amit XYZ": [
       "iligbqI7Omo",
@@ -17519,7 +17556,8 @@
       "CG-7xIBYrT4",
       "mrhLTqEMpJY",
       "gdfGP_fbVfs",
-      "vV7x_6Rpo0U"
+      "vV7x_6Rpo0U",
+      "xHMbpGzfMlw"
     ],
     "MR. INDIAN HACKER Vlogs": [
       "EGIGIdelgEU",
@@ -17553,7 +17591,8 @@
       "qsslryeS2dE",
       "9vkQIzgwV7w",
       "vR3Zl-EGszQ",
-      "9QhWb3mL1IA"
+      "9QhWb3mL1IA",
+      "iJC87bWWuPM"
     ],
     "Techno Gamerz": [
       "6y23cQpanKA",
@@ -17570,7 +17609,8 @@
       "RHxyCfnHYPg",
       "eFqUJuDmIaA",
       "EO9G3ggR-UE",
-      "8UE7nLyHooc"
+      "8UE7nLyHooc",
+      "1O_GCgCu-j4"
     ]
   },
   "yt_channel_ids": {
