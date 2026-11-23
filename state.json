@@ -223,13 +223,13 @@
   },
   "dangal": {
     "1739": {
-      "last_id": 263171
+      "last_id": 263190
     },
     "386": {
-      "last_id": 263172
+      "last_id": 263185
     },
     "1741": {
-      "last_id": 263174
+      "last_id": 263189
     },
     "634": {
       "last_id": 262379
@@ -1244,12 +1244,12 @@
         "captain-arti-caught-in-the-crossfire"
       ],
       [
-        1271702376,
-        "bbhin-day-76-who-fails-to-take-a-stand"
-      ],
-      [
         1271702375,
         "bbhin-day-75-who-s-the-ration-chor"
+      ],
+      [
+        1271702374,
+        "bbhin-day-74-immunity-with-a-twist"
       ],
       [
         1271702372,
@@ -1918,6 +1918,10 @@
       [
         1271444467,
         "bbhin-day-12-aloo-puri-ka-kissa"
+      ],
+      [
+        1271444466,
+        "bbhin-day-11-captaincy-race-gharwaales-fate"
       ],
       [
         1271444465,
@@ -4426,10 +4430,6 @@
       [
         1700055346,
         "rahi-avoids-prem-s-queries"
-      ],
-      [
-        1641042158,
-        "anupama-s-diwali-idea"
       ],
       [
         1641041995,
@@ -9104,6 +9104,10 @@
         "anupama-pours-her-heart-out"
       ],
       [
+        1000271794,
+        "anupama-celebrates-valentine-s-day"
+      ],
+      [
         1000271611,
         "anupama-reassures-anuj"
       ],
@@ -10664,6 +10668,10 @@
         "anupama-is-distraught"
       ],
       [
+        1000253231,
+        "anupama-s-mehendi-ceremony"
+      ],
+      [
         1000253210,
         "kavya-s-fake-apology"
       ],
@@ -11044,10 +11052,6 @@
       [
         1700102666,
         "rakshit-s-return-shocks-the-family"
-      ],
-      [
-        1641042154,
-        "aparajita-falls-for-lalit-s-trap"
       ],
       [
         1641042046,
@@ -11818,6 +11822,10 @@
       [
         1641041664,
         "nawab-s-fury-over-heer-s-plans"
+      ],
+      [
+        1641041561,
+        "heer-ruins-nawab-s-cricket-match"
       ],
       [
         1641041468,
@@ -13235,6 +13243,10 @@
     "1260161865": [],
     "1271522330": [
       [
+        1641042011,
+        "aarambhi-takes-a-bold-stand"
+      ],
+      [
         1641041829,
         "vishwas-fears-the-court-s-verdict"
       ],
@@ -13975,6 +13987,10 @@
         "saniya-s-truth-shocks-aarambhi"
       ],
       [
+        1641019625,
+        "aarambhi-s-moment-to-shine"
+      ],
+      [
         1641019556,
         "aarambhi-s-escape-against-all-odds"
       ],
@@ -14282,7 +14298,11 @@
       ],
       [
         1641042029,
-        "mahasangam-kabir-plots-mannat-s-downfall"
+        "kabir-wicked-plan-against-mannat"
+      ],
+      [
+        1641041944,
+        "sarika-and-amita-s-secret-scheme"
       ],
       [
         1641041823,
@@ -16607,6 +16627,10 @@
         "maya-tries-to-control-saanvi"
       ],
       [
+        1641041809,
+        "saanvi-returns-to-the-brar-house"
+      ],
+      [
         1641041673,
         "saanvi-s-sweet-gesture-for-aditya"
       ],
@@ -17560,7 +17584,8 @@
       "F9mdxEmrlRQ",
       "LNzn_NgVGiA",
       "3kl_pgKp88U",
-      "UdXGLBFUJVM"
+      "UdXGLBFUJVM",
+      "PnjdHNrdLTA"
     ],
     "The Experiment TV": [
       "tRf86M4b5hE",
