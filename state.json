@@ -1,8 +1,8 @@
 {
   "shows": {
     "1700000084": {
-      "last_episode": 4874,
-      "last_content_id": 1090555389
+      "last_episode": 4875,
+      "last_content_id": 1090555735
     },
     "1790007734": {
       "last_episode": 149,
@@ -52,7 +52,8 @@
         "0-1-6z51112292",
         "0-1-6z51110617",
         "0-1-6z51110623",
-        "0-1-6z51110622"
+        "0-1-6z51110622",
+        "0-1-6z51114405"
       ]
     },
     "0-6-4z5990458": {
@@ -1247,8 +1248,24 @@
         "captain-arti-caught-in-the-crossfire"
       ],
       [
+        1271702377,
+        "bbhin-day-77-all-eyes-on-the-eviction-result"
+      ],
+      [
         1271702376,
         "bbhin-day-76-who-fails-to-take-a-stand"
+      ],
+      [
+        1271702375,
+        "bbhin-day-75-who-s-the-ration-chor"
+      ],
+      [
+        1271702374,
+        "bbhin-day-74-immunity-with-a-twist"
+      ],
+      [
+        1271702373,
+        "bbhin-day-73-game-on-for-captaincy-daawedari"
       ],
       [
         1271702372,
@@ -1969,20 +1986,8 @@
     ],
     "1271650854": [
       [
-        1641042111,
-        "will-jeet-agree-to-anoop-s-condition"
-      ],
-      [
         1641042037,
         "echoes-of-jeet-s-childhood-pain"
-      ],
-      [
-        1641041920,
-        "will-jeet-return-home"
-      ],
-      [
-        1641041837,
-        "saumya-seeks-sanjeev-s-help"
       ],
       [
         1641041732,
@@ -3939,6 +3944,10 @@
         "will-raghav-take-back-his-case"
       ],
       [
+        1700067636,
+        "kinjal-gets-arrested"
+      ],
+      [
         1700067550,
         "raghav-sticks-to-his-case"
       ],
@@ -4431,20 +4440,12 @@
         "rahi-avoids-prem-s-queries"
       ],
       [
-        1641042158,
-        "anupama-s-diwali-idea"
-      ],
-      [
         1641042080,
         "prem-and-rahi-walk-away"
       ],
       [
         1641041995,
         "anupama-s-fight-for-justice"
-      ],
-      [
-        1641041908,
-        "ranvijay-s-48-hour-ultimatum"
       ],
       [
         1641041796,
@@ -7287,6 +7288,10 @@
         "maaya-apologises-to-anupama"
       ],
       [
+        1000284442,
+        "maaya-s-shocking-realisation"
+      ],
+      [
         1000284429,
         "anupama-comforts-maaya"
       ],
@@ -9105,6 +9110,10 @@
       [
         1000271881,
         "anupama-pours-her-heart-out"
+      ],
+      [
+        1000271794,
+        "anupama-celebrates-valentine-s-day"
       ],
       [
         1000271611,
@@ -11053,10 +11062,6 @@
         "rakshit-s-return-shocks-the-family"
       ],
       [
-        1641042154,
-        "aparajita-falls-for-lalit-s-trap"
-      ],
-      [
         1641042123,
         "aaradhya-seeks-vivaan-s-attention"
       ],
@@ -11813,14 +11818,6 @@
       [
         1641042188,
         "heer-begins-her-investigation"
-      ],
-      [
-        1641042105,
-        "heer-faces-blame-over-bad-food"
-      ],
-      [
-        1641042018,
-        "gulaab-appoints-a-new-contractor"
       ],
       [
         1641041914,
@@ -13254,6 +13251,18 @@
     "1260161865": [],
     "1271522330": [
       [
+        1641042190,
+        "vishwas-wins-the-custody-battle"
+      ],
+      [
+        1641042011,
+        "aarambhi-takes-a-bold-stand"
+      ],
+      [
+        1641041829,
+        "vishwas-fears-the-court-s-verdict"
+      ],
+      [
         1641041702,
         "aarambhi-thanks-dhruv"
       ],
@@ -14306,10 +14315,6 @@
       [
         1641042029,
         "mahasangam-kabir-plots-mannat-s-downfall"
-      ],
-      [
-        1641041944,
-        "sarika-and-amita-s-secret-scheme"
       ],
       [
         1641041823,
@@ -16630,14 +16635,6 @@
     ],
     "1271666144": [
       [
-        1641042156,
-        "sukumani-and-maya-clash-over-saanvi"
-      ],
-      [
-        1641041996,
-        "maya-tries-to-control-saanvi"
-      ],
-      [
         1641041901,
         "saanvi-s-ultimatum-to-yuvraj"
       ],
@@ -16875,6 +16872,10 @@
       ]
     ],
     "1271719301": [
+      [
+        1271725971,
+        "day-26-stronger-together"
+      ],
       [
         1271725763,
         "day-25-elvish-takes-charge"
