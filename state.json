@@ -231,13 +231,13 @@
   },
   "dangal": {
     "1739": {
-      "last_id": 263190
+      "last_id": 263198
     },
     "386": {
-      "last_id": 263185
+      "last_id": 263199
     },
     "1741": {
-      "last_id": 263189
+      "last_id": 263196
     },
     "634": {
       "last_id": 262379
@@ -1256,6 +1256,10 @@
         "bbhin-day-76-who-fails-to-take-a-stand"
       ],
       [
+        1271702375,
+        "bbhin-day-75-who-s-the-ration-chor"
+      ],
+      [
         1271702372,
         "bbhin-day-72-the-post-nomination-chaos"
       ],
@@ -1973,6 +1977,10 @@
       ]
     ],
     "1271650854": [
+      [
+        1641042284,
+        "jeet-s-family-visits-saumya-s-home"
+      ],
       [
         1641042111,
         "will-jeet-agree-to-anoop-s-condition"
@@ -11828,10 +11836,6 @@
         "gulaab-appoints-a-new-contractor"
       ],
       [
-        1641041914,
-        "heer-receives-nawab-s-letter"
-      ],
-      [
         1641041812,
         "heer-longs-for-nawab-s-return"
       ],
@@ -16639,6 +16643,10 @@
         "sukumani-and-maya-clash-over-saanvi"
       ],
       [
+        1641042079,
+        "kabir-faces-a-painful-truth"
+      ],
+      [
         1641041996,
         "maya-tries-to-control-saanvi"
       ],
@@ -17533,7 +17541,7 @@
       "bcast": 0
     },
     "Yeh Fitoor Tera": {
-      "ep_id": 1641042215,
+      "ep_id": 1641042284,
       "bcast": 0
     },
     "Anupama": {
