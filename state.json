@@ -146,7 +146,8 @@
         "0-1-6z51110591",
         "0-1-6z51110594",
         "0-1-6z51114373",
-        "0-1-6z51114374"
+        "0-1-6z51114374",
+        "0-1-6z51114375"
       ]
     },
     "0-6-4z5612471": {
@@ -1446,10 +1447,6 @@
       [
         1271702333,
         "bbhin-day-33-love-says-checkmate"
-      ],
-      [
-        1271702332,
-        "bbhin-day-32-the-ration-heist"
       ],
       [
         1271702331,
@@ -11868,12 +11865,12 @@
     ],
     "1271463159": [
       [
-        1641042188,
-        "heer-begins-her-investigation"
+        1641042279,
+        "heer-finds-proof-against-gulaab"
       ],
       [
-        1641042018,
-        "gulaab-appoints-a-new-contractor"
+        1641042188,
+        "heer-begins-her-investigation"
       ],
       [
         1641041914,
@@ -13319,6 +13316,10 @@
         "vishwas-wins-the-custody-battle"
       ],
       [
+        1641042011,
+        "aarambhi-takes-a-bold-stand"
+      ],
+      [
         1641041912,
         "dimple-learns-saniya-s-parentage"
       ],
@@ -13613,10 +13614,6 @@
       [
         1641032066,
         "aarambhi-and-dhruv-search-for-vihaan"
-      ],
-      [
-        1641031935,
-        "dhruv-sets-out-to-find-vihaan"
       ],
       [
         1641031838,
@@ -17637,7 +17634,7 @@
       "bcast": 0
     },
     "Tuu Juliet Jatt Di": {
-      "ep_id": 1641042188,
+      "ep_id": 1641042279,
       "bcast": 0
     },
     "Dr. Aarambhi": {
