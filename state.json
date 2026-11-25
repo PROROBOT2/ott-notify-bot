@@ -29,8 +29,8 @@
       "last_content_id": 1090555868
     },
     "1700000921": {
-      "last_episode": 1398,
-      "last_content_id": 1090555874
+      "last_episode": 1399,
+      "last_content_id": 1090556305
     }
   },
   "zee5": {
@@ -1273,14 +1273,6 @@
         "bbhin-day-78-get-set-for-the-bb20-show"
       ],
       [
-        1271702377,
-        "bbhin-day-77-all-eyes-on-the-eviction-result"
-      ],
-      [
-        1271702376,
-        "bbhin-day-76-who-fails-to-take-a-stand"
-      ],
-      [
         1271702375,
         "bbhin-day-75-who-s-the-ration-chor"
       ],
@@ -1389,6 +1381,10 @@
         "bbhin-day-49-surprise-guests-and-reality-checks"
       ],
       [
+        1271702348,
+        "bbhin-day-48-rohit-shetty-drops-truth-bombs"
+      ],
+      [
         1271702347,
         "bbhin-day-47-ek-vishesh-adhikaar-kai-dawedaar"
       ],
@@ -1447,6 +1443,10 @@
       [
         1271702333,
         "bbhin-day-33-love-says-checkmate"
+      ],
+      [
+        1271702332,
+        "bbhin-day-32-the-ration-heist"
       ],
       [
         1271702331,
@@ -2007,8 +2007,12 @@
         "saumya-puts-marriage-on-hold"
       ],
       [
-        1641042284,
-        "jeet-s-family-visits-saumya-s-home"
+        1641042215,
+        "jeet-stands-firm-for-saumya"
+      ],
+      [
+        1641042111,
+        "will-jeet-agree-to-anoop-s-condition"
       ],
       [
         1641042037,
@@ -4477,8 +4481,16 @@
         "anupama-s-decision-stuns-vasundhara"
       ],
       [
+        1641042266,
+        "ranvijay-hands-the-cafe-to-mahi"
+      ],
+      [
         1641042158,
         "anupama-s-diwali-idea"
+      ],
+      [
+        1641042080,
+        "prem-and-rahi-walk-away"
       ],
       [
         1641041995,
@@ -11103,16 +11115,12 @@
         "rakshit-s-return-shocks-the-family"
       ],
       [
-        1641042154,
-        "aparajita-falls-for-lalit-s-trap"
+        1641042365,
+        "will-rakshit-foil-lalit-s-plan"
       ],
       [
         1641042123,
         "aaradhya-seeks-vivaan-s-attention"
-      ],
-      [
-        1641042046,
-        "rakshit-refuses-to-forgive-sudha"
       ],
       [
         1641041955,
@@ -11865,12 +11873,20 @@
     ],
     "1271463159": [
       [
-        1641042279,
-        "heer-finds-proof-against-gulaab"
+        1641042462,
+        "gulaab-plans-a-trap-for-heer"
       ],
       [
         1641042188,
         "heer-begins-her-investigation"
+      ],
+      [
+        1641042105,
+        "heer-faces-blame-over-bad-food"
+      ],
+      [
+        1641042018,
+        "gulaab-appoints-a-new-contractor"
       ],
       [
         1641041914,
@@ -13304,24 +13320,12 @@
     "1260161865": [],
     "1271522330": [
       [
-        1641042461,
-        "aarambhi-meets-vihaan"
-      ],
-      [
         1641042280,
         "dhruv-comforts-aarambhi"
       ],
       [
         1641042190,
         "vishwas-wins-the-custody-battle"
-      ],
-      [
-        1641042011,
-        "aarambhi-takes-a-bold-stand"
-      ],
-      [
-        1641041912,
-        "dimple-learns-saniya-s-parentage"
       ],
       [
         1641041829,
@@ -13614,6 +13618,10 @@
       [
         1641032066,
         "aarambhi-and-dhruv-search-for-vihaan"
+      ],
+      [
+        1641031935,
+        "dhruv-sets-out-to-find-vihaan"
       ],
       [
         1641031838,
@@ -14374,10 +14382,6 @@
         "jolly-s-desperate-move"
       ],
       [
-        1641042211,
-        "mahasangam-anita-gets-blamed"
-      ],
-      [
         1641042124,
         "mahasangam-sarika-manipulates-aarambhi"
       ],
@@ -14944,10 +14948,6 @@
       [
         1641025276,
         "mannat-seeks-vikrant-s-truth"
-      ],
-      [
-        1641025171,
-        "suspicion-clouds-samragi-s-family"
       ],
       [
         1641025076,
@@ -15672,10 +15672,6 @@
       [
         1641016076,
         "mannat-scolds-dua"
-      ],
-      [
-        1641016052,
-        "malla-suspects-arzoo"
       ],
       [
         1641016017,
@@ -16708,6 +16704,10 @@
     ],
     "1271666144": [
       [
+        1641042408,
+        "aditya-stands-up-for-saanvi"
+      ],
+      [
         1641042264,
         "yuvraj-s-misdeeds-come-to-light"
       ],
@@ -16716,8 +16716,8 @@
         "sukumani-and-maya-clash-over-saanvi"
       ],
       [
-        1641042079,
-        "kabir-faces-a-painful-truth"
+        1641041996,
+        "maya-tries-to-control-saanvi"
       ],
       [
         1641041901,
@@ -16960,10 +16960,6 @@
       [
         1271726502,
         "day-28-debate-fallout"
-      ],
-      [
-        1271726340,
-        "day-27-the-debate-test"
       ],
       [
         1271725971,
@@ -17634,7 +17630,7 @@
       "bcast": 0
     },
     "Tuu Juliet Jatt Di": {
-      "ep_id": 1641042279,
+      "ep_id": 1641042462,
       "bcast": 0
     },
     "Dr. Aarambhi": {
@@ -17646,7 +17642,7 @@
       "bcast": 0
     },
     "Sayoneee": {
-      "ep_id": 1641042264,
+      "ep_id": 1641042408,
       "bcast": 0
     },
     "Rizz Master": {
