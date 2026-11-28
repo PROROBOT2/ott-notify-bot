@@ -1,13 +1,15 @@
 """
-hotstar_part.py  –  JioHotstar Episode Notifications  (v5)
+hotstar_part.py  –  JioHotstar Episode Notifications  (v6)
 ===========================================================
-Fixes in v5:
-  1. Episode-specific URL: /shows/{slug}/{show_id}/{ep_slug}/{ep_id}/watch
-  2. Poster from ep_id directly via Hotstar CDN (no Episode API needed)
-  3. Download poster bytes → upload to Telegram (CDN bypass)
+Fixes in v6:
+  1. Removed broken t_web_hs_3x transform → use f_auto only
+  2. publicUri: if already full URL, use as-is (don't prepend base)
+  3. Try multiple CDN bases + prod numbers for ep poster
+  4. Extract image URLs from page JSON (window.__NEXT_DATA__ / JSON-LD)
+  5. Show-level poster as reliable final fallback
 """
 
-import os, re, datetime, time, logging, requests
+import os, re, datetime, time, logging, requests, json
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +35,15 @@ IMG_HDR = {
     "user-agent": HOTSTAR_HDR["user-agent"],
 }
 
-IMG_BASE  = "https://img10.hotstar.com/image/upload/f_auto,t_web_hs_3x/"
+# ✅ Fixed: removed broken t_web_hs_3x transform
+CDN_BASES = [
+    "https://img10.hotstar.com/image/upload/f_auto/",
+    "https://img10.hotstar.com/image/upload/f_auto,q_auto:eco/",
+    "https://img10.hotstar.com/image/upload/",
+]
+PROD_NUMS = ["8073", "9057", "9025", "8071", "8080"]
+EP_SUFFIXES = ["-h", "-i", "-t", "-v"]
+
 SHOW_BASE = "https://www.hotstar.com/in/shows"
 
 TIMED_SHOWS = [
@@ -57,45 +67,120 @@ def init(**kwargs):
     pass
 
 # ───────────────────────────────────────────────────────────────────────────
-# Poster: try to fetch from Hotstar CDN using known ep_id URL patterns
+# Image helpers
 # ───────────────────────────────────────────────────────────────────────────
 
-def _ep_poster_url(ep_id):
+def _build_img_url(uri):
     """
-    Try known Hotstar CDN image patterns using ep_id.
-    Returns (url, bytes) of the first working image, or (None, None).
-    Hotstar stores episode images at predictable Cloudinary paths.
+    If uri is already a full URL, return as-is.
+    Otherwise try each CDN base prefix and return the first that works.
+    Returns (url_str, bytes_or_None).
     """
-    patterns = [
-        f"{IMG_BASE}sources/r1/cms/prod/8073/{ep_id}-h",
-        f"{IMG_BASE}sources/r1/cms/prod/8073/{ep_id}-i",
-        f"{IMG_BASE}sources/r1/cms/prod/8073/{ep_id}-t",
-        f"{IMG_BASE}sources/r1/cms/prod/9057/{ep_id}-h",
-        f"{IMG_BASE}sources/r1/cms/prod/9057/{ep_id}-i",
-    ]
-    for url in patterns:
-        try:
-            r = requests.get(url, headers=IMG_HDR, timeout=15)
-            ct = r.headers.get("content-type", "")
-            if r.ok and r.content and "image" in ct:
-                log.info(f"[HOTSTAR] Poster found: {url.split('/')[-1]}")
-                return url, r.content
-        except Exception as e:
-            log.debug(f"Poster pattern fail: {e}")
+    if uri.startswith("http"):
+        img = _fetch_image(uri)
+        return (uri, img) if img else (uri, None)
+
+    for base in CDN_BASES:
+        url = base + uri
+        img = _fetch_image(url)
+        if img:
+            log.info(f"[HOTSTAR] img OK via {base}")
+            return url, img
+
     return None, None
 
 
 def _fetch_image(url):
-    """Download any image URL with Hotstar headers."""
+    """Download image bytes; return None on failure."""
     if not url:
         return None
     try:
-        r = requests.get(url, headers=IMG_HDR, timeout=20)
+        r = requests.get(url, headers=IMG_HDR, timeout=12)
         ct = r.headers.get("content-type", "")
         if r.ok and r.content and "image" in ct:
             return r.content
     except Exception as e:
-        log.debug(f"Image fetch: {e}")
+        log.debug(f"img fetch {url[-40:]}: {e}")
+    return None
+
+
+def _ep_poster_cdn(ep_id):
+    """
+    Try all CDN base × prod_num × suffix combinations.
+    Returns (url, bytes) of first hit, or (None, None).
+    """
+    for base in CDN_BASES:
+        for prod in PROD_NUMS:
+            for sfx in EP_SUFFIXES:
+                url = f"{base}sources/r1/cms/prod/{prod}/{ep_id}{sfx}"
+                img = _fetch_image(url)
+                if img:
+                    log.info(f"[HOTSTAR] CDN hit: prod={prod} sfx={sfx}")
+                    return url, img
+    return None, None
+
+
+def _ep_poster_page(show, ep_slug, ep_id):
+    """
+    Fetch episode page HTML and extract hotstar image URLs
+    from embedded JSON (window.__NEXT_DATA__ or JSON-LD).
+    Returns (url, bytes) or (None, None).
+    """
+    page_url = f"{SHOW_BASE}/{show['slug']}/{show['show_id']}/{ep_slug}/{ep_id}/watch"
+    try:
+        r = requests.get(page_url, headers={
+            "User-Agent": HOTSTAR_HDR["user-agent"],
+            "Accept-Language": "en-IN,en;q=0.9",
+        }, timeout=15)
+        if not r.ok:
+            log.debug(f"[HOTSTAR] page fetch {r.status_code}")
+            return None, None
+        text = r.text
+
+        # Extract all Hotstar CDN image URLs from page source
+        candidates = re.findall(
+            r'"(https://img\d+\.hotstar\.com/image/upload/[^"]{10,})"',
+            text
+        )
+        # Filter out tiny icons / logos (prefer landscape episode images)
+        for url in candidates:
+            # Skip very short paths (likely icons)
+            if len(url) < 60:
+                continue
+            img = _fetch_image(url)
+            if img and len(img) > 20000:   # at least 20 KB → real image
+                log.info(f"[HOTSTAR] Page-JSON poster found")
+                return url, img
+
+    except Exception as e:
+        log.debug(f"[HOTSTAR] page poster: {e}")
+    return None, None
+
+
+def _poster_from_item(item):
+    """
+    Extract poster URL from API item dict.
+    ✅ Fixed: if publicUri is already a full URL, use it directly.
+    """
+    for img in item.get("imageSets") or []:
+        t = str(img.get("imageType", "")).upper()
+        u = img.get("publicUri", "")
+        if u and ("EPISODE" in t or "THUMBNAIL" in t or "LANDSCAPE" in t):
+            if u.startswith("http"):
+                return u
+            # Try building full URL with CDN bases
+            for base in CDN_BASES:
+                return base + u   # return first option; caller downloads & verifies
+    for img in item.get("imageSets") or []:
+        u = img.get("publicUri", "")
+        if u:
+            if u.startswith("http"):
+                return u
+            return CDN_BASES[0] + u
+    for key in ("poster", "landscapeImg", "squareImg", "coverImg", "imageUri", "imgUri"):
+        u = item.get(key, "")
+        if u:
+            return u if u.startswith("http") else CDN_BASES[0] + u
     return None
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -136,8 +221,8 @@ def _send_with_bytes(img_bytes, caption):
 def _send(poster_url, poster_bytes, caption):
     """
     Try in order:
-      1. Upload pre-fetched bytes (fastest, most reliable)
-      2. Download url → upload bytes
+      1. Upload pre-fetched bytes
+      2. Download poster_url → upload bytes
       3. Send URL to Telegram directly
       4. Text-only fallback
     """
@@ -149,7 +234,6 @@ def _send(poster_url, poster_bytes, caption):
         img = _fetch_image(poster_url)
         if img and _send_with_bytes(img, caption):
             return True
-        # Try URL directly
         if _tg("sendPhoto", photo=poster_url, caption=caption):
             return True
 
@@ -160,7 +244,7 @@ def _send(poster_url, poster_bytes, caption):
 # ───────────────────────────────────────────────────────────────────────────
 
 def _show_api_data(show_id):
-    """Returns (latestEpisodeBroadcastDate, show_poster_url)."""
+    """Returns (latestEpisodeBroadcastDate, show_poster_url, poster_bytes)."""
     try:
         r = requests.get(
             f"https://api.hotstar.com/o/v2/content/{show_id}?type=SHOW&tas=5",
@@ -168,11 +252,15 @@ def _show_api_data(show_id):
         if r.status_code == 200:
             item   = r.json()["body"]["results"]["item"]
             bcast  = item.get("latestEpisodeBroadcastDate")
-            poster = _poster_from_item(item)
-            return bcast, poster
+            poster_uri = _poster_from_item(item)
+            if poster_uri:
+                p_url, p_bytes = _build_img_url(poster_uri)
+            else:
+                p_url, p_bytes = None, None
+            return bcast, p_url, p_bytes
     except Exception as e:
         log.debug(f"ShowAPI {show_id}: {e}")
-    return None, None
+    return None, None, None
 
 # ───────────────────────────────────────────────────────────────────────────
 # Step 2 – Sitemap
@@ -229,26 +317,8 @@ def _episode_info(ep_id):
             log.debug(f"EpAPI {ep_id}: {e}"); break
     return None
 
-
-def _poster_from_item(item):
-    """Extract poster URL from API item dict."""
-    for img in item.get("imageSets") or []:
-        t = str(img.get("imageType", "")).upper()
-        u = img.get("publicUri", "")
-        if u and ("EPISODE" in t or "THUMBNAIL" in t or "LANDSCAPE" in t):
-            return IMG_BASE + u
-    for img in item.get("imageSets") or []:
-        u = img.get("publicUri", "")
-        if u:
-            return IMG_BASE + u
-    for key in ("poster", "landscapeImg", "squareImg", "coverImg", "imageUri", "imgUri"):
-        u = item.get(key, "")
-        if u:
-            return u if u.startswith("http") else IMG_BASE + u
-    return None
-
 # ───────────────────────────────────────────────────────────────────────────
-# Captions — now with EPISODE-SPECIFIC URL
+# Captions
 # ───────────────────────────────────────────────────────────────────────────
 
 def _ist_now():
@@ -271,7 +341,6 @@ def _caption_rich(show, ep_data, ep_slug, ep_id):
         date_str = _ist_now().strftime("%d %B %Y")
     sn  = str(ep_data.get("season_no") or "01").zfill(2)
     en  = str(ep_data.get("ep_no") or "").zfill(3)
-    # ✅ Episode-specific URL with slug + ep_id
     url = f"{SHOW_BASE}/{show['slug']}/{show['show_id']}/{ep_slug}/{ep_id}/watch"
     return (
         "#NewEpisode #DMT #JIOHOTSTAR #Notification\n\n"
@@ -288,7 +357,6 @@ def _caption_rich(show, ep_data, ep_slug, ep_id):
 def _caption_fallback(show, ep_slug, ep_id):
     date_str = _ist_now().strftime("%d %B %Y")
     en  = _ep_num_from_slug(ep_slug)
-    # ✅ Episode-specific URL with slug + ep_id
     url = f"{SHOW_BASE}/{show['slug']}/{show['show_id']}/{ep_slug}/{ep_id}/watch"
     return (
         "#NewEpisode #DMT #JIOHOTSTAR #Notification\n\n"
@@ -320,16 +388,16 @@ def run(state: dict):
     # ── Phase 1: Show API check ───────────────────────────────────────────
     need_sitemap = []
     skip_api     = []
-    show_posters = {}   # show_id -> url (fallback)
+    show_posters = {}   # show_id -> (url, bytes) for fallback
 
     for show in todays_shows:
         name    = show["name"]
         show_id = show["show_id"]
         last    = state["hs_last_ep"].get(name, {})
 
-        bcast, show_poster = _show_api_data(show_id)
-        if show_poster:
-            show_posters[show_id] = show_poster
+        bcast, sp_url, sp_bytes = _show_api_data(show_id)
+        if sp_url:
+            show_posters[show_id] = (sp_url, sp_bytes)
 
         if bcast is None:
             log.info(f"[HOTSTAR] {name}: Show API unavailable -> sitemap fallback")
@@ -385,12 +453,15 @@ def run(state: dict):
         ep_id, ep_slug = to_send[0]
         log.info(f"[HOTSTAR] {name}: ep_id={ep_id} slug={ep_slug}")
 
-        # ── Get poster: try ep_id CDN patterns FIRST (most reliable) ─────
-        poster_url, poster_bytes = _ep_poster_url(ep_id)
+        poster_url, poster_bytes = None, None
+
+        # ── Poster Method 1: Episode CDN patterns ─────────────────────────
+        poster_url, poster_bytes = _ep_poster_cdn(ep_id)
         log.info(f"[HOTSTAR] {name}: CDN poster={'YES' if poster_bytes else 'NO'}")
 
-        # ── Try Episode API for rich metadata ─────────────────────────────
+        # ── Poster Method 2: Episode API ──────────────────────────────────
         item = _episode_info(ep_id)
+        ep_bcast = 0
         if item:
             season   = item.get("season") or {}
             ep_bcast = item.get("broadCastDate", 0)
@@ -400,18 +471,30 @@ def run(state: dict):
                 "bcast":     ep_bcast,
                 "season_no": season.get("number", ""),
             }
-            # If CDN poster failed, try API poster
-            if not poster_bytes and not poster_url:
-                poster_url = _poster_from_item(item) or show_posters.get(show_id)
+            # Try API poster if CDN failed
+            if not poster_bytes:
+                api_uri = _poster_from_item(item)
+                if api_uri:
+                    poster_url, poster_bytes = _build_img_url(api_uri)
             caption = _caption_rich(show, ep_data, ep_slug, ep_id)
             log.info(f"[HOTSTAR] {name}: Ep#{ep_data['ep_no']} '{ep_data['title']}'")
         else:
-            # Episode API blocked → use show-level poster as last resort
             log.warning(f"[HOTSTAR] {name}: Episode API blocked")
-            ep_bcast = 0
-            if not poster_bytes and not poster_url:
-                poster_url = show_posters.get(show_id)
+            ep_data = None
             caption = _caption_fallback(show, ep_slug, ep_id)
+
+        # ── Poster Method 3: Page JSON scrape ─────────────────────────────
+        if not poster_bytes:
+            log.info(f"[HOTSTAR] {name}: trying page JSON scrape for poster ...")
+            poster_url, poster_bytes = _ep_poster_page(show, ep_slug, ep_id)
+            log.info(f"[HOTSTAR] {name}: Page poster={'YES' if poster_bytes else 'NO'}")
+
+        # ── Poster Method 4: Show-level fallback ──────────────────────────
+        if not poster_bytes and not poster_url:
+            sp = show_posters.get(show_id)
+            if sp:
+                poster_url, poster_bytes = sp
+                log.info(f"[HOTSTAR] {name}: using show-level poster fallback")
 
         sent = _send(poster_url, poster_bytes, caption)
         if sent:
